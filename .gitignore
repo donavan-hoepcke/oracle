@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.env
+
+oracle-web/node_modules/
+oracle-web/.vite/
+oracle-web/tsconfig.tsbuildinfo
+oracle-web/server/node_modules/
+
+.claude/
+NUL

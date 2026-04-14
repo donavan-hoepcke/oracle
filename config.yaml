@@ -1,0 +1,15 @@
+# Stock Monitor Configuration
+
+watchlist_file: "tickers.txt"
+check_interval: 30       # seconds between updates
+alert_sound: "alert.wav" # must be a .wav file in the same folder
+alert_threshold: .03  # trigger alert if target price is within this percentage.
+market_hours:
+  open: "09:30"
+  close: "16:00"
+  timezone: "US/Eastern"
+app_name: "Stock Monitor"
+
+# Stock Monitor Configuration
+provider: "finnhub"          # or "yfinance" to fall back
+finnhub_api_key: "d40fko1r01qqo3qhpaigd40fko1r01qqo3qhpaj0"

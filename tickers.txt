@@ -1,0 +1,25 @@
+# Stock Monitor Watchlist
+# Format: SYMBOL,TARGET_PRICE
+# Lines starting with '#' are comments
+
+# Oracle October, 28
+ADTX,.17
+ASST,1.47
+ATCH,.48
+BYND,1.97
+CAN,1,7
+CODX,.95
+DVLT,3.8
+EDSA,2.3
+EHGO,.49
+FGL,.41
+FRGT,1.9
+GPUS,.67
+JEM,.42
+POLA,4.21
+RELI,1.2
+SCWO,.54
+VSEE,2.53
+WULF,15.51
+XHLD,.55
+YMAT,1.15
