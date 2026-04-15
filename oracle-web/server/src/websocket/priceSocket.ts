@@ -6,7 +6,7 @@ import { getPrices, PriceData } from '../services/priceService.js';
 import { getMarketStatus, isMarketOpen } from '../services/marketHoursService.js';
 import { alertService } from '../services/alertService.js';
 import { stairStepService, SignalType } from '../services/stairStepService.js';
-import { tickerBotService, TickerSourceMode, BotStatus } from '../services/tickerBotService.js';
+import { tickerBotService, TickerSourceMode, BotStatus, PlaywrightDebugReport } from '../services/tickerBotService.js';
 
 export interface StockState {
   symbol: string;
@@ -322,6 +322,14 @@ class PriceSocketServer {
       },
     });
     return status;
+  }
+
+  async previewPlaywrightTickers(): Promise<WatchlistItem[]> {
+    return tickerBotService.previewPlaywrightTickers();
+  }
+
+  async previewPlaywrightDebug(): Promise<PlaywrightDebugReport> {
+    return tickerBotService.previewPlaywrightDebug();
   }
 
   getStockStates(): StockState[] {

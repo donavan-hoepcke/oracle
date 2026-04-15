@@ -14,6 +14,8 @@ Bot-template adaptation plan for the Oracle web stack.
 - [x] Extend websocket payloads with bot status.
 - [x] Add frontend controls for source and lifecycle.
 - [x] Add Playwright ticker extraction with configurable selector.
+- [x] Add configurable login + post-login navigation for Playwright source.
+- [x] Add preview endpoint to test DOM selectors before full source switch.
 - [ ] Configure production selector and login URL for the target website.
 - [ ] Validate end-to-end with real login flow and monitored symbols.
 

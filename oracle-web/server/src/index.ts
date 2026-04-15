@@ -76,6 +76,36 @@ app.post('/api/bot/source', async (req, res) => {
   }
 });
 
+app.get('/api/bot/playwright-preview', async (req, res) => {
+  const limitRaw = req.query.limit;
+  const limitNum = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : 25;
+  const limit = Number.isFinite(limitNum) ? Math.max(1, Math.min(limitNum, 200)) : 25;
+
+  try {
+    const items = await priceSocketServer.previewPlaywrightTickers();
+    res.json({
+      count: items.length,
+      items: items.slice(0, limit),
+      selectorMode: config.bot.playwright.row_selector ? 'row' : 'symbols',
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to preview playwright extraction',
+    });
+  }
+});
+
+app.get('/api/bot/playwright-debug', async (_req, res) => {
+  try {
+    const report = await priceSocketServer.previewPlaywrightDebug();
+    res.json(report);
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to inspect playwright page',
+    });
+  }
+});
+
 // Serve static files in production
 const distPath = resolve(__dirname, '../../dist');
 if (existsSync(distPath)) {

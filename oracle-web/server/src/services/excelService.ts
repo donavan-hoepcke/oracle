@@ -10,6 +10,22 @@ export interface WatchlistItem {
   symbol: string;
   targetPrice: number;
   resistance: number | null;
+  oracleFields?: Record<string, string>;
+  scannerPrice?: number | null;
+  stockDataValue?: number | null;
+  stopLossPct?: number | null;
+  stopPrice?: number | null;
+  longPrice?: number | null;
+  buyZonePrice?: number | null;
+  sellZonePrice?: number | null;
+  profitDeltaPct?: number | null;
+  maxVolume?: number | null;
+  lastVolume?: number | null;
+  lastPrice?: number | null;
+  premarketVolume?: number | null;
+  relativeVolume?: number | null;
+  floatMillions?: number | null;
+  gapPercent?: number | null;
 }
 
 export type WatchlistChangeCallback = (items: WatchlistItem[]) => void;

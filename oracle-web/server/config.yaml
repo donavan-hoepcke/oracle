@@ -1,13 +1,46 @@
 watchlist_dir: "F:/oracle_data"
 check_interval: 30
 alert_threshold: 0.03
-ticker_source: "excel"
+ticker_source: "playwright"
 bot:
   poll_interval_sec: 30
   playwright:
-    start_url: ""
-    symbols_selector: "[data-symbol], .ticker, .symbol"
+    start_url: "https://university.stockstotrade.com/login"
+    data_page_url: "https://university.stockstotrade.com/page/oracle-tool"
+    wait_for_selector: "table, [data-symbol], .ticker, .symbol, [class*='oracle']"
+    symbols_selector: "[data-symbol], .ticker, .symbol, table tbody tr td:first-child"
+    row_selector: "table tbody tr, [role='row']"
+    symbol_selector: "[data-symbol], [class*='symbol'], td:first-child"
+    target_selector: ""
+    resistance_selector: ""
+    login_required: true
+    manual_login: true
+    manual_login_timeout_sec: 600
+    persist_session: true
+    session_state_path: ".playwright-state/oracle-session.json"
+    login_url: "https://university.stockstotrade.com/login"
+    username_selector: "input[type='email'], input[name='email'], input[name='username']"
+    password_selector: "input[type='password'], input[name='password']"
+    submit_selector: "button[type='submit'], input[type='submit']"
+    post_login_wait_selector: "a[href*='logout'], [href*='/logout']"
+    username_env: "ORACLE_WEB_USERNAME"
+    password_env: "ORACLE_WEB_PASSWORD"
     headless: false
+    use_existing_chrome: true
+    chrome_cdp_url: "http://127.0.0.1:9222"
+    oracle_expected_columns:
+      - "symbol"
+      - "stop"
+      - "long"
+      - "stock_data"
+      - "symbol_2"
+      - "stop_loss"
+      - "buy_zone"
+      - "profit_delta"
+      - "sell_zone"
+      - "max"
+      - "last"
+    oracle_schema_strict: true
 market_hours:
   open: "09:30"
   close: "16:00"

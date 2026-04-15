@@ -9,6 +9,8 @@ oracle-web/node_modules/
 oracle-web/.vite/
 oracle-web/tsconfig.tsbuildinfo
 oracle-web/server/node_modules/
+oracle-web/.chrome-profile/
+oracle-web/server/.playwright-state/
 
 .claude/
 NUL
