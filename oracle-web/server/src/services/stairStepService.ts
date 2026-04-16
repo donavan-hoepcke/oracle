@@ -1,5 +1,6 @@
-import { fetch1MinBars, fetch5MinBars, PolygonBar } from './polygonService.js';
-import { fetchAlpaca1MinBars, fetchAlpaca5MinBars, AlpacaBar } from './alpacaBarService.js';
+import { fetch1MinBars, fetch5MinBars } from './polygonService.js';
+import { fetchAlpaca1MinBars, fetchAlpaca5MinBars } from './alpacaBarService.js';
+import { Bar } from './indicatorService.js';
 import {
   calculateEMA,
   calculateATR,
@@ -8,9 +9,6 @@ import {
   isEmaRising,
 } from './indicatorService.js';
 import { stairStepConfig, alpacaApiKeyId, polygonApiKey } from '../config.js';
-
-// Common bar type (both services return same structure)
-type Bar = PolygonBar | AlpacaBar;
 
 export type SignalType = 'BRK' | 'RC' | null;
 

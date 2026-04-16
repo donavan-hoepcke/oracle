@@ -1,29 +1,57 @@
 import { useWebSocket } from './hooks/useWebSocket';
 import { useNotifications } from './hooks/useNotifications';
+import { useTradeCandidates } from './hooks/useTradeCandidates';
+import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { StatusBar } from './components/StatusBar';
 import { StockTable } from './components/StockTable';
+import { TradeIdeasPage } from './components/TradeIdeasPage';
+import { PremarketSyncBanner } from './components/PremarketSyncBanner';
 import { TickerSourceMode } from './types';
+
+const VALID_SOURCES: TickerSourceMode[] = ['excel', 'playwright'];
+
+function navLinkClass({ isActive }: { isActive: boolean }): string {
+  return isActive
+    ? 'px-3 py-1.5 rounded bg-gray-900 text-white'
+    : 'px-3 py-1.5 rounded bg-gray-200 text-gray-700 hover:bg-gray-300';
+}
 
 function App() {
   const { stocks, marketStatus, botStatus, isConnected, lastUpdate, alerts, clearAlert } =
     useWebSocket();
+  const { candidates, asOf, isLoading, error, refresh } = useTradeCandidates(20);
 
   const { hasPermission, requestPermission } = useNotifications(alerts, clearAlert);
 
   const updateSource = async (source: TickerSourceMode) => {
-    await fetch('/api/bot/source', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source }),
-    });
+    try {
+      const res = await fetch('/api/bot/source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source }),
+      });
+      if (!res.ok) console.error('Failed to update source:', res.status);
+    } catch (err) {
+      console.error('Failed to update source:', err);
+    }
   };
 
   const startBot = async () => {
-    await fetch('/api/bot/start', { method: 'POST' });
+    try {
+      const res = await fetch('/api/bot/start', { method: 'POST' });
+      if (!res.ok) console.error('Failed to start bot:', res.status);
+    } catch (err) {
+      console.error('Failed to start bot:', err);
+    }
   };
 
   const stopBot = async () => {
-    await fetch('/api/bot/stop', { method: 'POST' });
+    try {
+      const res = await fetch('/api/bot/stop', { method: 'POST' });
+      if (!res.ok) console.error('Failed to stop bot:', res.status);
+    } catch (err) {
+      console.error('Failed to stop bot:', err);
+    }
   };
 
   return (
@@ -31,6 +59,21 @@ function App() {
       <header className="bg-white shadow-sm">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <h1 className="text-2xl font-bold text-gray-900">Oracle Stock Monitor</h1>
+          <nav className="mt-3 flex items-center gap-3 text-sm">
+            <NavLink
+              to="/"
+              className={navLinkClass}
+              end
+            >
+              Dashboard
+            </NavLink>
+            <NavLink
+              to="/ideas"
+              className={navLinkClass}
+            >
+              Ideas
+            </NavLink>
+          </nav>
         </div>
       </header>
 
@@ -45,13 +88,21 @@ function App() {
       />
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
+        <PremarketSyncBanner marketStatus={marketStatus} botStatus={botStatus} stocks={stocks} />
+
         <div className="bg-white rounded-lg shadow p-4 mb-4 flex flex-wrap items-center gap-3">
-          <span className="text-sm text-gray-600 font-medium">Ticker Source</span>
+          <label htmlFor="ticker-source" className="text-sm text-gray-600 font-medium">Ticker Source</label>
 
           <select
+            id="ticker-source"
             className="border border-gray-300 rounded px-2 py-1 text-sm"
             value={botStatus?.source ?? 'excel'}
-            onChange={(e) => updateSource(e.target.value as TickerSourceMode)}
+            onChange={(e) => {
+              const value = e.target.value;
+              if (VALID_SOURCES.includes(value as TickerSourceMode)) {
+                updateSource(value as TickerSourceMode);
+              }
+            }}
           >
             <option value="excel">Excel Watchlist</option>
             <option value="playwright">Playwright Web Page</option>
@@ -76,13 +127,35 @@ function App() {
           )}
         </div>
 
-        <div className="bg-white rounded-lg shadow">
-          <StockTable stocks={stocks} />
-        </div>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <>
+                <div className="bg-white rounded-lg shadow">
+                  <StockTable stocks={stocks} />
+                </div>
 
-        <p className="text-center text-gray-400 text-sm mt-4">
-          Double-click a row to open in Robinhood
-        </p>
+                <p className="text-center text-gray-400 text-sm mt-4">
+                  Double-click a row to open in Robinhood
+                </p>
+              </>
+            }
+          />
+          <Route
+            path="/ideas"
+            element={
+              <TradeIdeasPage
+                candidates={candidates}
+                asOf={asOf}
+                isLoading={isLoading}
+                error={error}
+                onRefresh={refresh}
+              />
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </main>
     </div>
   );

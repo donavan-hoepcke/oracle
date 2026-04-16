@@ -43,7 +43,7 @@ export function getMarketStatus(): MarketStatus {
   let nextChange: string;
   if (isWeekend) {
     const daysUntilMonday = day === 0 ? 1 : 2;
-    nextChange = `Market opens Monday at ${config.market_hours.open} ET`;
+    nextChange = `Market opens Monday at ${config.market_hours.open} ET (in ${daysUntilMonday} day${daysUntilMonday > 1 ? 's' : ''})`;
   } else if (currentMinutes < openMinutes) {
     nextChange = `Market opens at ${config.market_hours.open} ET`;
   } else if (currentMinutes >= closeMinutes) {

@@ -28,7 +28,7 @@ export function StockTable({ stocks }: StockTableProps) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full">
+      <table className="w-full" aria-label="Stock watchlist">
         <thead className="bg-gray-100">
           <tr>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">

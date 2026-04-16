@@ -1,37 +1,20 @@
 import { StockState } from '../types';
+import { formatPrice, formatChange, getChangeColor, getTrendArrow, robinhoodUrl } from '../utils/format';
 
 interface StockRowProps {
   stock: StockState;
 }
 
 export function StockRow({ stock }: StockRowProps) {
-  const handleDoubleClick = () => {
-    window.open(`https://robinhood.com/stocks/${stock.symbol}`, '_blank');
+  const openRobinhood = () => {
+    window.open(robinhoodUrl(stock.symbol), '_blank');
   };
 
-  const formatPrice = (price: number | null): string => {
-    if (price === null) return '--';
-    return `$${price.toFixed(2)}`;
-  };
-
-  const formatChange = (change: number | null, percent: number | null): string => {
-    if (change === null || percent === null) return '--';
-    const sign = change >= 0 ? '+' : '';
-    return `${sign}${change.toFixed(2)} (${sign}${percent.toFixed(2)}%)`;
-  };
-
-  const getChangeColor = (change: number | null): string => {
-    if (change === null) return 'text-gray-500';
-    if (change > 0) return 'text-green-600';
-    if (change < 0) return 'text-red-600';
-    return 'text-gray-500';
-  };
-
-  const getTrendArrow = (trend30m: 'up' | 'down' | 'flat' | null): { arrow: string; color: string } => {
-    if (trend30m === null) return { arrow: '', color: '' };
-    if (trend30m === 'up') return { arrow: '▲', color: 'text-green-600' };
-    if (trend30m === 'down') return { arrow: '▼', color: 'text-red-600' };
-    return { arrow: '–', color: 'text-gray-400' };
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openRobinhood();
+    }
   };
 
   const getSignalBadge = (signal: 'BRK' | 'RC' | null) => {
@@ -61,7 +44,11 @@ export function StockRow({ stock }: StockRowProps) {
 
   return (
     <tr
-      onDoubleClick={handleDoubleClick}
+      onDoubleClick={openRobinhood}
+      onKeyDown={handleKeyDown}
+      tabIndex={0}
+      role="row"
+      aria-label={`${stock.symbol} - ${stock.currentPrice !== null ? `$${stock.currentPrice.toFixed(2)}` : 'no price'}`}
       className={`border-b border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors ${
         stock.inTargetRange ? 'bg-green-200 hover:bg-green-300' : ''
       }`}

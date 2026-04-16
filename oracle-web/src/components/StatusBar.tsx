@@ -27,6 +27,7 @@ export function StatusBar({
             className={`w-2 h-2 rounded-full ${
               isConnected ? 'bg-green-500' : 'bg-red-500'
             }`}
+            aria-hidden="true"
           />
           <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
         </div>
@@ -38,6 +39,7 @@ export function StatusBar({
             className={`w-2 h-2 rounded-full ${
               marketStatus?.isOpen ? 'bg-green-500' : 'bg-yellow-500'
             }`}
+            aria-hidden="true"
           />
           <span>
             {marketStatus?.isOpen ? 'Market Open' : 'Market Closed'}

@@ -68,22 +68,11 @@ export function useWebSocket(): UseWebSocketResult {
     switch (message.type) {
       case 'initial':
       case 'watchlist_reload': {
-        const data = message.data as {
-          stocks?: StockState[];
-          marketStatus?: MarketStatus;
-          botStatus?: BotStatus;
-        };
-        if (data.stocks) {
-          setStocks(data.stocks);
-        }
-        if (data.marketStatus) {
-          setMarketStatus(data.marketStatus);
-        }
-        if (data.botStatus) {
-          setBotStatus(data.botStatus);
-        }
+        const { stocks, marketStatus: ms, botStatus: bs } = message.data;
+        setStocks(stocks);
+        setMarketStatus(ms);
+        setBotStatus(bs);
         setLastUpdate(new Date());
-        // Clear alerts on watchlist reload
         if (message.type === 'watchlist_reload') {
           setAlerts([]);
         }
@@ -91,35 +80,28 @@ export function useWebSocket(): UseWebSocketResult {
       }
 
       case 'price_update': {
-        const data = message.data as { stocks?: StockState[] };
-        if (data.stocks) {
-          setStocks((prevStocks) => {
-            const stockMap = new Map(prevStocks.map((s) => [s.symbol, s]));
-            for (const updated of data.stocks!) {
-              stockMap.set(updated.symbol, updated);
-            }
-            return Array.from(stockMap.values());
-          });
-          setLastUpdate(new Date());
-        }
+        const { stocks: updatedStocks } = message.data;
+        setStocks((prevStocks) => {
+          const stockMap = new Map(prevStocks.map((s) => [s.symbol, s]));
+          for (const updated of updatedStocks) {
+            stockMap.set(updated.symbol, updated);
+          }
+          return Array.from(stockMap.values());
+        });
+        setLastUpdate(new Date());
         break;
       }
 
       case 'status': {
-        const data = message.data as { marketStatus?: MarketStatus; botStatus?: BotStatus };
-        if (data.marketStatus) {
-          setMarketStatus(data.marketStatus);
-        }
-        if (data.botStatus) {
-          setBotStatus(data.botStatus);
-        }
+        const { marketStatus: ms, botStatus: bs } = message.data;
+        setMarketStatus(ms);
+        setBotStatus(bs);
         break;
       }
 
       case 'alert': {
-        const alertStock = message.data as StockState;
+        const alertStock = message.data;
         setAlerts((prev) => {
-          // Avoid duplicate alerts
           if (prev.some((a) => a.symbol === alertStock.symbol)) {
             return prev;
           }

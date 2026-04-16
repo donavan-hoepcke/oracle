@@ -1,5 +1,6 @@
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useState, useRef } from 'react';
 import { StockState } from '../types';
+import { robinhoodUrl } from '../utils/format';
 
 interface UseNotificationsResult {
   hasPermission: boolean;
@@ -33,6 +34,8 @@ export function useNotifications(
       return;
     }
 
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
     for (const alert of alerts) {
       const hasTarget = alert.targetPrice > 0;
       const notification = new Notification(`Price Alert: ${alert.symbol}`, {
@@ -46,7 +49,7 @@ export function useNotifications(
 
       notification.onclick = () => {
         window.focus();
-        window.open(`https://robinhood.com/stocks/${alert.symbol}`, '_blank');
+        window.open(robinhoodUrl(alert.symbol), '_blank');
         notification.close();
       };
 
@@ -55,10 +58,16 @@ export function useNotifications(
       };
 
       // Auto-close after 30 seconds
-      setTimeout(() => {
+      timers.push(setTimeout(() => {
         notification.close();
-      }, 30000);
+      }, 30000));
     }
+
+    return () => {
+      for (const timer of timers) {
+        clearTimeout(timer);
+      }
+    };
   }, [alerts, hasPermission, clearAlert]);
 
   return {

@@ -3,7 +3,7 @@ import { Server } from 'http';
 import { config } from '../config.js';
 import { WatchlistItem } from '../services/excelService.js';
 import { getPrices, PriceData } from '../services/priceService.js';
-import { getMarketStatus, isMarketOpen } from '../services/marketHoursService.js';
+import { getMarketStatus, MarketStatus } from '../services/marketHoursService.js';
 import { alertService } from '../services/alertService.js';
 import { stairStepService, SignalType } from '../services/stairStepService.js';
 import { tickerBotService, TickerSourceMode, BotStatus, PlaywrightDebugReport } from '../services/tickerBotService.js';
@@ -12,6 +12,21 @@ export interface StockState {
   symbol: string;
   targetPrice: number;
   resistance: number | null;
+  oracleFields?: Record<string, string>;
+  scannerPrice?: number | null;
+  stockDataValue?: number | null;
+  stopLossPct?: number | null;
+  stopPrice?: number | null;
+  longPrice?: number | null;
+  buyZonePrice?: number | null;
+  sellZonePrice?: number | null;
+  profitDeltaPct?: number | null;
+  maxVolume?: number | null;
+  lastVolume?: number | null;
+  premarketVolume?: number | null;
+  relativeVolume?: number | null;
+  floatMillions?: number | null;
+  gapPercent?: number | null;
   currentPrice: number | null;
   change: number | null;
   changePercent: number | null;
@@ -31,10 +46,12 @@ interface PriceHistoryEntry {
   timestamp: Date;
 }
 
-interface WebSocketMessage {
-  type: 'price_update' | 'alert' | 'status' | 'watchlist_reload' | 'initial';
-  data: unknown;
-}
+type WebSocketMessage =
+  | { type: 'initial'; data: { stocks: StockState[]; marketStatus: MarketStatus; botStatus: BotStatus } }
+  | { type: 'watchlist_reload'; data: { stocks: StockState[]; marketStatus: MarketStatus; botStatus: BotStatus } }
+  | { type: 'price_update'; data: { stocks: StockState[] } }
+  | { type: 'status'; data: { marketStatus: MarketStatus; botStatus: BotStatus } }
+  | { type: 'alert'; data: StockState };
 
 class PriceSocketServer {
   private wss: WebSocketServer | null = null;
@@ -99,23 +116,7 @@ class PriceSocketServer {
     stairStepService.clearAll();
 
     for (const item of items) {
-      this.stockStates.set(item.symbol, {
-        symbol: item.symbol,
-        targetPrice: item.targetPrice,
-        resistance: item.resistance,
-        currentPrice: null,
-        change: null,
-        changePercent: null,
-        trend30m: null,
-        inTargetRange: false,
-        alerted: false,
-        source: '',
-        lastUpdate: null,
-        signal: null,
-        boxTop: null,
-        boxBottom: null,
-        signalTimestamp: null,
-      });
+      this.stockStates.set(item.symbol, this.createStockState(item));
     }
 
     this.broadcast({
@@ -140,6 +141,51 @@ class PriceSocketServer {
     const lowerBound = targetPrice * (1 - threshold);
     const upperBound = targetPrice * (1 + threshold);
     return currentPrice >= lowerBound && currentPrice <= upperBound;
+  }
+
+  private createStockState(item: WatchlistItem): StockState {
+    return {
+      symbol: item.symbol,
+      targetPrice: item.targetPrice,
+      resistance: item.resistance,
+      oracleFields: item.oracleFields,
+      scannerPrice: item.scannerPrice ?? null,
+      stockDataValue: item.stockDataValue ?? null,
+      stopLossPct: item.stopLossPct ?? null,
+      stopPrice: item.stopPrice ?? null,
+      longPrice: item.longPrice ?? null,
+      buyZonePrice: item.buyZonePrice ?? null,
+      sellZonePrice: item.sellZonePrice ?? null,
+      profitDeltaPct: item.profitDeltaPct ?? null,
+      maxVolume: item.maxVolume ?? null,
+      lastVolume: item.lastVolume ?? null,
+      premarketVolume: item.premarketVolume ?? null,
+      relativeVolume: item.relativeVolume ?? null,
+      floatMillions: item.floatMillions ?? null,
+      gapPercent: item.gapPercent ?? null,
+      currentPrice: null,
+      change: null,
+      changePercent: null,
+      trend30m: null,
+      inTargetRange: false,
+      alerted: false,
+      source: '',
+      lastUpdate: null,
+      signal: null,
+      boxTop: null,
+      boxBottom: null,
+      signalTimestamp: null,
+    };
+  }
+
+  private broadcastBotStatus(status: BotStatus): void {
+    this.broadcast({
+      type: 'status',
+      data: {
+        marketStatus: getMarketStatus(),
+        botStatus: status,
+      },
+    });
   }
 
   private updatePriceHistory(symbol: string, price: number): void {
@@ -290,37 +336,19 @@ class PriceSocketServer {
 
   async setTickerSource(source: TickerSourceMode): Promise<BotStatus> {
     const status = await tickerBotService.setSource(source);
-    this.broadcast({
-      type: 'status',
-      data: {
-        marketStatus: getMarketStatus(),
-        botStatus: status,
-      },
-    });
+    this.broadcastBotStatus(status);
     return status;
   }
 
   async startBot(): Promise<BotStatus> {
     const status = await tickerBotService.start();
-    this.broadcast({
-      type: 'status',
-      data: {
-        marketStatus: getMarketStatus(),
-        botStatus: status,
-      },
-    });
+    this.broadcastBotStatus(status);
     return status;
   }
 
   async stopBot(): Promise<BotStatus> {
     const status = await tickerBotService.stop();
-    this.broadcast({
-      type: 'status',
-      data: {
-        marketStatus: getMarketStatus(),
-        botStatus: status,
-      },
-    });
+    this.broadcastBotStatus(status);
     return status;
   }
 

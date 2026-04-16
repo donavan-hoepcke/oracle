@@ -1,5 +1,5 @@
 // Generic bar interface that works with both Polygon and Alpaca bars
-interface Bar {
+export interface Bar {
   timestamp: Date;
   open: number;
   high: number;

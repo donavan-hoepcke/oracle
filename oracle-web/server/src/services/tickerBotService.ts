@@ -23,6 +23,8 @@ export interface PlaywrightDebugReport {
   counts: Record<string, number>;
 }
 
+const REQUIRED_TICKER_COUNT = 20;
+
 type WatchlistCallback = (items: WatchlistItem[]) => void;
 
 interface BrowserLike {
@@ -108,15 +110,8 @@ class PlaywrightTickerSource {
   async start(): Promise<void> {
     if (this.page) return;
 
-    // Keep Playwright optional until this source is enabled by the user.
-    const dynamicImport = new Function('m', 'return import(m)') as (moduleName: string) => Promise<{
-      chromium: {
-        launch: (opts: { headless: boolean }) => Promise<BrowserLike>;
-        connectOverCDP: (endpointURL: string) => Promise<BrowserLike>;
-      };
-    }>;
-    const playwrightModule = await dynamicImport('playwright');
-    const chromium = playwrightModule.chromium;
+    // Playwright is lazily loaded so the dependency remains optional.
+    const { chromium } = await import('playwright');
 
     const useExistingChrome = config.bot.playwright.use_existing_chrome;
 
@@ -492,7 +487,16 @@ class PlaywrightTickerSource {
 
     const readySelector = playwrightConfig.wait_for_selector || playwrightConfig.row_selector || playwrightConfig.symbols_selector;
     if (readySelector) {
-      await page.waitForSelector(readySelector, { timeout: 30000 });
+      try {
+        await page.waitForSelector(readySelector, { timeout: 30000 });
+      } catch (waitError) {
+        // Some Oracle layouts render rows inside iframes, so the selector is never visible on the top-level page.
+        // In that case, verify readiness by attempting a frame-aware extraction before failing startup.
+        const fallbackItems = await this.fetchTickers().catch(() => [] as WatchlistItem[]);
+        if (fallbackItems.length === 0) {
+          throw waitError;
+        }
+      }
     }
   }
 
@@ -626,13 +630,46 @@ class TickerBotService {
   private currentItems: WatchlistItem[] = [];
   private readonly playwrightSource = new PlaywrightTickerSource();
 
+  private normalizeToTwenty(items: WatchlistItem[]): WatchlistItem[] {
+    const deduped = new Map<string, WatchlistItem>();
+
+    for (const item of items) {
+      const symbol = item.symbol?.trim().toUpperCase();
+      if (!symbol) continue;
+      if (!deduped.has(symbol)) {
+        deduped.set(symbol, {
+          ...item,
+          symbol,
+        });
+      }
+    }
+
+    let normalized = Array.from(deduped.values());
+
+    if (normalized.length > REQUIRED_TICKER_COUNT) {
+      this.lastError =
+        `Received ${normalized.length} symbols; using first ${REQUIRED_TICKER_COUNT}.`;
+      normalized = normalized.slice(0, REQUIRED_TICKER_COUNT);
+      return normalized;
+    }
+
+    if (normalized.length < REQUIRED_TICKER_COUNT) {
+      this.lastError =
+        `Expected ${REQUIRED_TICKER_COUNT} symbols, received ${normalized.length}.`;
+    }
+
+    return normalized;
+  }
+
   constructor() {
     excelService.onWatchlistChange((items) => {
       if (!this.isRunning || this.source !== 'excel') return;
-      this.currentItems = items;
+      this.currentItems = this.normalizeToTwenty(items);
       this.lastSync = new Date();
-      this.lastError = null;
-      this.notify(items);
+      if (this.currentItems.length === REQUIRED_TICKER_COUNT) {
+        this.lastError = null;
+      }
+      this.notify(this.currentItems);
     });
   }
 
@@ -679,7 +716,7 @@ class TickerBotService {
     this.lastError = null;
 
     if (this.source === 'excel') {
-      this.currentItems = excelService.loadWatchlist();
+      this.currentItems = this.normalizeToTwenty(excelService.loadWatchlist());
       excelService.startWatching();
       this.lastSync = new Date();
       this.notify(this.currentItems);
@@ -724,32 +761,22 @@ class TickerBotService {
   }
 
   async previewPlaywrightTickers(): Promise<WatchlistItem[]> {
-    const canReuseLivePlaywright = this.isRunning && this.source === 'playwright';
-
-    if (!canReuseLivePlaywright) {
-      await this.playwrightSource.start();
-    }
-
-    try {
-      return await this.playwrightSource.fetchTickers();
-    } finally {
-      if (!canReuseLivePlaywright) {
-        await this.playwrightSource.stop();
-      }
-    }
+    return this.withPlaywright(() => this.playwrightSource.fetchTickers());
   }
 
   async previewPlaywrightDebug(): Promise<PlaywrightDebugReport> {
-    const canReuseLivePlaywright = this.isRunning && this.source === 'playwright';
+    return this.withPlaywright(() => this.playwrightSource.debugPage());
+  }
 
-    if (!canReuseLivePlaywright) {
+  private async withPlaywright<T>(action: () => Promise<T>): Promise<T> {
+    const canReuse = this.isRunning && this.source === 'playwright';
+    if (!canReuse) {
       await this.playwrightSource.start();
     }
-
     try {
-      return await this.playwrightSource.debugPage();
+      return await action();
     } finally {
-      if (!canReuseLivePlaywright) {
+      if (!canReuse) {
         await this.playwrightSource.stop();
       }
     }
@@ -761,10 +788,12 @@ class TickerBotService {
     }
 
     const items = await this.playwrightSource.fetchTickers();
-    this.currentItems = items;
+    this.currentItems = this.normalizeToTwenty(items);
     this.lastSync = new Date();
-    this.lastError = null;
-    this.notify(items);
+    if (this.currentItems.length === REQUIRED_TICKER_COUNT) {
+      this.lastError = null;
+    }
+    this.notify(this.currentItems);
   }
 
   private notify(items: WatchlistItem[]): void {

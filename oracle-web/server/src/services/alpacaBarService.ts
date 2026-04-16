@@ -1,13 +1,8 @@
 import { alpacaApiKeyId, alpacaApiSecretKey, alpacaDataFeed } from '../config.js';
+import { Bar } from './indicatorService.js';
 
-export interface AlpacaBar {
-  timestamp: Date;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+/** @deprecated Use `Bar` from indicatorService instead */
+export type AlpacaBar = Bar;
 
 interface AlpacaBarResponse {
   bars: Array<{
@@ -33,7 +28,7 @@ async function fetchAlpacaBarsWithFeed(
   timeframe: string,
   lookbackMinutes: number,
   feed: string
-): Promise<AlpacaBar[]> {
+): Promise<Bar[]> {
   if (!alpacaApiKeyId || !alpacaApiSecretKey) {
     return [];
   }
@@ -84,7 +79,7 @@ export async function fetchAlpacaBars(
   symbol: string,
   timeframe: string,
   lookbackMinutes: number
-): Promise<AlpacaBar[]> {
+): Promise<Bar[]> {
   if (!alpacaApiKeyId || !alpacaApiSecretKey) {
     return [];
   }
@@ -115,7 +110,7 @@ export async function fetchAlpacaBars(
 export async function fetchAlpaca1MinBars(
   symbol: string,
   lookbackMinutes: number = 60
-): Promise<AlpacaBar[]> {
+): Promise<Bar[]> {
   return fetchAlpacaBars(symbol, '1Min', lookbackMinutes);
 }
 
@@ -125,6 +120,6 @@ export async function fetchAlpaca1MinBars(
 export async function fetchAlpaca5MinBars(
   symbol: string,
   lookbackMinutes: number = 120
-): Promise<AlpacaBar[]> {
+): Promise<Bar[]> {
   return fetchAlpacaBars(symbol, '5Min', lookbackMinutes);
 }

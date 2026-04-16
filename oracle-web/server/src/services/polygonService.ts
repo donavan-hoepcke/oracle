@@ -1,13 +1,8 @@
 import { polygonApiKey } from '../config.js';
+import { Bar } from './indicatorService.js';
 
-export interface PolygonBar {
-  timestamp: Date;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+/** @deprecated Use `Bar` from indicatorService instead */
+export type PolygonBar = Bar;
 
 interface PolygonAggResponse {
   results?: Array<{
@@ -34,7 +29,7 @@ export async function fetchBars(
   multiplier: number,
   timespan: string,
   lookbackMinutes: number
-): Promise<PolygonBar[]> {
+): Promise<Bar[]> {
   if (!polygonApiKey) {
     console.warn('POLYGON_API_KEY not set, cannot fetch bars');
     return [];
@@ -47,10 +42,14 @@ export async function fetchBars(
   const fromStr = from.toISOString().split('T')[0];
   const toStr = now.toISOString().split('T')[0];
 
-  const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/${multiplier}/${timespan}/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=50000&apiKey=${polygonApiKey}`;
+  const url = `https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(symbol)}/range/${multiplier}/${timespan}/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=50000`;
 
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${polygonApiKey}`,
+      },
+    });
     if (!response.ok) {
       console.error(`Polygon API error for ${symbol}: ${response.status}`);
       return [];
@@ -82,7 +81,7 @@ export async function fetchBars(
 export async function fetch1MinBars(
   symbol: string,
   lookbackMinutes: number = 60
-): Promise<PolygonBar[]> {
+): Promise<Bar[]> {
   return fetchBars(symbol, 1, 'minute', lookbackMinutes);
 }
 
@@ -92,6 +91,6 @@ export async function fetch1MinBars(
 export async function fetch5MinBars(
   symbol: string,
   lookbackMinutes: number = 120
-): Promise<PolygonBar[]> {
+): Promise<Bar[]> {
   return fetchBars(symbol, 5, 'minute', lookbackMinutes);
 }
