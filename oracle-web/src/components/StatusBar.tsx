@@ -61,7 +61,7 @@ export function StatusBar({
           <>
             <div className="text-gray-400">|</div>
             <span className="text-gray-300">
-              Bot: {botStatus.isRunning ? 'Running' : 'Stopped'} ({botStatus.source})
+              Bot: {botStatus.isRunning ? 'Running' : 'Stopped'}
             </span>
           </>
         )}

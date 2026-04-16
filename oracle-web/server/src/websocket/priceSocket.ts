@@ -1,12 +1,11 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server } from 'http';
 import { config } from '../config.js';
-import { WatchlistItem } from '../services/excelService.js';
 import { getPrices, PriceData } from '../services/priceService.js';
 import { getMarketStatus, MarketStatus } from '../services/marketHoursService.js';
 import { alertService } from '../services/alertService.js';
 import { stairStepService, SignalType } from '../services/stairStepService.js';
-import { tickerBotService, TickerSourceMode, BotStatus, PlaywrightDebugReport } from '../services/tickerBotService.js';
+import { tickerBotService, WatchlistItem, BotStatus, PlaywrightDebugReport } from '../services/tickerBotService.js';
 
 export interface StockState {
   symbol: string;
@@ -51,7 +50,9 @@ type WebSocketMessage =
   | { type: 'watchlist_reload'; data: { stocks: StockState[]; marketStatus: MarketStatus; botStatus: BotStatus } }
   | { type: 'price_update'; data: { stocks: StockState[] } }
   | { type: 'status'; data: { marketStatus: MarketStatus; botStatus: BotStatus } }
-  | { type: 'alert'; data: StockState };
+  | { type: 'alert'; data: StockState }
+  | { type: 'setup_alert'; data: { symbol: string; setup: string; score: number; rationale: string[] } };
+import { ruleEngineService } from '../services/ruleEngineService.js';
 
 class PriceSocketServer {
   private wss: WebSocketServer | null = null;
@@ -308,13 +309,37 @@ class PriceSocketServer {
       });
     }
 
-    // Broadcast alerts
+    // Broadcast price alerts
     for (const alertState of alerts) {
       console.log(`ALERT: ${alertState.symbol} at $${alertState.currentPrice} (target: $${alertState.targetPrice})`);
       this.broadcast({
         type: 'alert',
         data: alertState,
       });
+    }
+
+    // Broadcast setup alerts for high-quality setups
+    try {
+      const candidates = await ruleEngineService.getRankedCandidates(Array.from(this.stockStates.values()), 20);
+      for (const candidate of candidates) {
+        // Only alert for top-scoring setups, score threshold can be tuned
+        if (
+          ['red_candle_theory', 'momentum_continuation', 'pullback_reclaim', 'crowded_extension_watch'].includes(candidate.setup) &&
+          candidate.score >= 60 // Only alert for strong setups
+        ) {
+          this.broadcast({
+            type: 'setup_alert',
+            data: {
+              symbol: candidate.symbol,
+              setup: candidate.setup,
+              score: candidate.score,
+              rationale: candidate.rationale,
+            },
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Error broadcasting setup alerts:', err);
     }
   }
 
@@ -332,12 +357,6 @@ class PriceSocketServer {
 
   getBotStatus(): BotStatus {
     return tickerBotService.getStatus();
-  }
-
-  async setTickerSource(source: TickerSourceMode): Promise<BotStatus> {
-    const status = await tickerBotService.setSource(source);
-    this.broadcastBotStatus(status);
-    return status;
   }
 
   async startBot(): Promise<BotStatus> {

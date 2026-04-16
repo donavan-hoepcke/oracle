@@ -1,7 +1,5 @@
-watchlist_dir: "F:/oracle_data"
 check_interval: 30
 alert_threshold: 0.03
-ticker_source: "playwright"
 bot:
   poll_interval_sec: 30
   playwright:
