@@ -2,9 +2,10 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useNotifications } from './hooks/useNotifications';
 import { useTradeCandidates } from './hooks/useTradeCandidates';
 import { useJournal } from './hooks/useJournal';
+import { useScanner } from './hooks/useScanner';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { StatusBar } from './components/StatusBar';
-import { StockTable } from './components/StockTable';
+import { ScannerPage } from './components/ScannerPage';
 import { TradeIdeasPage } from './components/TradeIdeasPage';
 import { JournalPage } from './components/JournalPage';
 import { PremarketSyncBanner } from './components/PremarketSyncBanner';
@@ -25,6 +26,12 @@ function App() {
     error: journalError,
     refresh: journalRefresh,
   } = useJournal();
+  const {
+    snapshot: scannerSnapshot,
+    isLoading: scannerLoading,
+    error: scannerError,
+    refresh: scannerRefresh,
+  } = useScanner();
 
   const { hasPermission, requestPermission } = useNotifications(alerts, clearAlert);
 
@@ -194,15 +201,12 @@ function App() {
           <Route
             path="/"
             element={
-              <>
-                <div className="bg-white rounded-lg shadow">
-                  <StockTable stocks={stocks} />
-                </div>
-
-                <p className="text-center text-gray-400 text-sm mt-4">
-                  Double-click a row to open in Robinhood
-                </p>
-              </>
+              <ScannerPage
+                snapshot={scannerSnapshot}
+                isLoading={scannerLoading}
+                error={scannerError}
+                onRefresh={scannerRefresh}
+              />
             }
           />
           <Route
