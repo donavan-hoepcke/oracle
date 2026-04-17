@@ -49,6 +49,9 @@ execution:
   max_risk_pct: 0.10
   red_candle_vol_mult: 1.5
   momentum_gap_pct: 0.03
+  momentum_max_chase_pct: 0.05
+  cooldown_after_stop_ms: 86400000  # 24h — rest of the session
+  require_uptrend_for_momentum: true
   trailing_breakeven_r: 1.0
   trailing_start_r: 2.0
   trailing_distance_r: 1.0

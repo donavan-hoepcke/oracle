@@ -183,22 +183,17 @@ class RuleEngineService {
       (hasTag('gap_and_go') || hasTag('orb_break')) &&
       stock.buyZonePrice !== null &&
       stock.stopPrice !== null &&
-      stock.trend30m !== 'down'
+      stock.trend30m !== 'down' &&
+      this.isMomentumSetupValid(stock)
     ) {
-      const lastPrice = stock.lastPrice;
-      const currentPrice = stock.currentPrice;
-      const hasGap = lastPrice && lastPrice > 0 && currentPrice !== null
-        ? (currentPrice - lastPrice) / lastPrice >= config.execution.momentum_gap_pct
-        : true;
-      if (hasGap) {
-        return 'momentum_continuation';
-      }
+      return 'momentum_continuation';
     }
 
     if (
       (hasTag('vwap_reclaim') || hasTag('first_pullback')) &&
       stock.buyZonePrice !== null &&
-      stock.stopPrice !== null
+      stock.stopPrice !== null &&
+      this.isNearBuyZone(stock)
     ) {
       return 'pullback_reclaim';
     }
@@ -207,20 +202,53 @@ class RuleEngineService {
       return 'crowded_extension_watch';
     }
 
-    if (stock.buyZonePrice !== null && stock.stopPrice !== null && stock.sellZonePrice !== null) {
-      const lastPrice = stock.lastPrice;
-      const currentPrice = stock.currentPrice;
-      if (lastPrice && lastPrice > 0 && currentPrice !== null) {
-        const gapPct = (currentPrice - lastPrice) / lastPrice;
-        if (gapPct < config.execution.momentum_gap_pct) {
-          return null;
-        }
-      }
+    if (
+      stock.buyZonePrice !== null &&
+      stock.stopPrice !== null &&
+      stock.sellZonePrice !== null &&
+      this.isMomentumSetupValid(stock)
+    ) {
       // Fallback candidate when structure is good but message tags are sparse.
       return 'momentum_continuation';
     }
 
     return null;
+  }
+
+  /**
+   * Gate momentum entries:
+   *  - optionally require 30m uptrend
+   *  - require premarket gap >= momentum_gap_pct (from oracle lastPrice)
+   *  - require current price within momentum_max_chase_pct above buy zone
+   *    (prevents chase fills 10-50% above the Oracle entry zone)
+   */
+  private isMomentumSetupValid(stock: StockState): boolean {
+    const exec = config.execution;
+
+    if (exec.require_uptrend_for_momentum && stock.trend30m !== 'up') {
+      return false;
+    }
+
+    const currentPrice = stock.currentPrice;
+    if (currentPrice === null) return false;
+
+    const lastPrice = stock.lastPrice;
+    if (lastPrice && lastPrice > 0) {
+      const gapPct = (currentPrice - lastPrice) / lastPrice;
+      if (gapPct < exec.momentum_gap_pct) return false;
+    }
+
+    return this.isNearBuyZone(stock);
+  }
+
+  private isNearBuyZone(stock: StockState): boolean {
+    const buy = stock.buyZonePrice;
+    const current = stock.currentPrice;
+    if (!buy || !current || buy <= 0) return false;
+    // Allow current to be at or below buy zone (better entry), or up to
+    // momentum_max_chase_pct above. Reject if we're chasing too hard.
+    const pctAbove = (current - buy) / buy;
+    return pctAbove <= config.execution.momentum_max_chase_pct;
   }
 
   private async detectRedCandleTheory(stock: StockState): Promise<RedCandleSignal> {

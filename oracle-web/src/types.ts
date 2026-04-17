@@ -189,6 +189,7 @@ export interface ScannerRow {
     score: number;
     setup: CandidateSetup;
   } | null;
+  cooldownExpiresAt: string | null;
 }
 
 export interface ScannerSnapshot {

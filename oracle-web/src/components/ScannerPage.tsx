@@ -60,6 +60,10 @@ function rowWhy(row: ScannerRow): string {
     const rText = r !== null ? ` (${r >= 0 ? '+' : ''}${r.toFixed(1)}R)` : '';
     return `Bot is trading this. ${strategyLabel(row.activeTrade.trailingState)} stop${rText}.`;
   }
+  if (row.cooldownExpiresAt) {
+    const mins = Math.max(0, Math.round((new Date(row.cooldownExpiresAt).getTime() - Date.now()) / 60000));
+    return `Cooldown: re-entry blocked for ~${mins}m after prior stop exit.`;
+  }
   if (row.rejection) {
     return `Rejected: ${row.rejection.reason}. (${strategyLabel(row.rejection.setup)} score ${row.rejection.score.toFixed(0)})`;
   }
