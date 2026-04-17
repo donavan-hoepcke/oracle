@@ -8,6 +8,7 @@ import { StatusBar } from './components/StatusBar';
 import { ScannerPage } from './components/ScannerPage';
 import { TradeIdeasPage } from './components/TradeIdeasPage';
 import { JournalPage } from './components/JournalPage';
+import { BacktestPage } from './components/BacktestPage';
 import { PremarketSyncBanner } from './components/PremarketSyncBanner';
 
 function navLinkClass({ isActive }: { isActive: boolean }): string {
@@ -104,6 +105,12 @@ function App() {
               className={navLinkClass}
             >
               Journal
+            </NavLink>
+            <NavLink
+              to="/backtest"
+              className={navLinkClass}
+            >
+              Backtest
             </NavLink>
           </nav>
         </div>
@@ -232,6 +239,7 @@ function App() {
               />
             }
           />
+          <Route path="/backtest" element={<BacktestPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

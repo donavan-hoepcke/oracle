@@ -198,3 +198,55 @@ export interface ScannerSnapshot {
   asOf: string;
   marketStatus: MarketStatus;
 }
+
+export type BacktestExitReason = 'stop' | 'trailing_stop' | 'target' | 'eod';
+
+export interface BacktestTrade {
+  symbol: string;
+  strategy: CandidateSetup;
+  entryPrice: number;
+  entryTs: string;
+  shares: number;
+  initialStop: number;
+  currentStop: number;
+  target: number;
+  riskPerShare: number;
+  trailingState: TrailingState;
+  exitPrice?: number;
+  exitTs?: string;
+  exitReason?: BacktestExitReason;
+  pnl?: number;
+  rMultiple?: number;
+  rationale: string[];
+  washSaleFlagged: boolean;
+}
+
+export interface BacktestSummary {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPnl: number;
+  largestWin: number;
+  largestLoss: number;
+  avgR: number;
+  startingEquity: number;
+  endingEquity: number;
+}
+
+export interface EquityPoint {
+  ts: string;
+  cash: number;
+  deployed: number;
+  unrealizedPnl: number;
+  equity: number;
+}
+
+export interface BacktestResult {
+  tradingDay: string;
+  totalCycles: number;
+  trades: BacktestTrade[];
+  summary: BacktestSummary;
+  equityCurve: EquityPoint[];
+  skipped: Array<{ symbol: string; ts: string; reason: string }>;
+}
