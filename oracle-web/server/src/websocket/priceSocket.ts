@@ -56,6 +56,7 @@ type WebSocketMessage =
   | { type: 'trade_update'; data: { active: ActiveTrade[]; dailyPnl: number; circuitBreakerActive: boolean } };
 import { ruleEngineService } from '../services/ruleEngineService.js';
 import { executionService, ActiveTrade } from '../services/executionService.js';
+import { recordingService } from '../services/recordingService.js';
 
 class PriceSocketServer {
   private wss: WebSocketServer | null = null;
@@ -389,6 +390,19 @@ class PriceSocketServer {
       } catch (err) {
         console.error('Execution cycle error:', err);
       }
+    }
+
+    try {
+      await recordingService.writeCycle({
+        stocks: Array.from(this.stockStates.values()),
+        candidates,
+        rejections: executionService.getRejections(),
+        activeTrades: executionService.getActiveTrades(),
+        closedTrades: executionService.getLedger(),
+        marketStatus,
+      });
+    } catch (err) {
+      console.error('Recording write error:', err);
     }
   }
 
