@@ -1,9 +1,7 @@
 export type SignalType = 'BRK' | 'RC' | null;
-export type TickerSourceMode = 'excel' | 'playwright';
 
 export interface BotStatus {
   isRunning: boolean;
-  source: TickerSourceMode;
   lastSync: string | null;
   symbolCount: number;
   lastError: string | null;

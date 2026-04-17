@@ -12,7 +12,7 @@ export function StockTable({ stocks }: StockTableProps) {
         <div className="text-center">
           <p className="text-lg">No stocks in watchlist</p>
           <p className="text-sm mt-2">
-            Load symbols from Excel or start the Playwright ticker source
+            Start the bot to load symbols from the Oracle web page
           </p>
         </div>
       </div>

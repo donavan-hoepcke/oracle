@@ -2,15 +2,33 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../config.js';
-import { excelService, WatchlistItem } from './excelService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export type TickerSourceMode = 'excel' | 'playwright';
+export interface WatchlistItem {
+  symbol: string;
+  targetPrice: number;
+  resistance: number | null;
+  oracleFields?: Record<string, string>;
+  scannerPrice?: number | null;
+  stockDataValue?: number | null;
+  stopLossPct?: number | null;
+  stopPrice?: number | null;
+  longPrice?: number | null;
+  buyZonePrice?: number | null;
+  sellZonePrice?: number | null;
+  profitDeltaPct?: number | null;
+  maxVolume?: number | null;
+  lastVolume?: number | null;
+  lastPrice?: number | null;
+  premarketVolume?: number | null;
+  relativeVolume?: number | null;
+  floatMillions?: number | null;
+  gapPercent?: number | null;
+}
 
 export interface BotStatus {
   isRunning: boolean;
-  source: TickerSourceMode;
   lastSync: string | null;
   symbolCount: number;
   lastError: string | null;
@@ -622,7 +640,6 @@ class PlaywrightTickerSource {
 
 class TickerBotService {
   private readonly callbacks: WatchlistCallback[] = [];
-  private source: TickerSourceMode = config.ticker_source;
   private isRunning = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private lastSync: Date | null = null;
@@ -661,18 +678,6 @@ class TickerBotService {
     return normalized;
   }
 
-  constructor() {
-    excelService.onWatchlistChange((items) => {
-      if (!this.isRunning || this.source !== 'excel') return;
-      this.currentItems = this.normalizeToTwenty(items);
-      this.lastSync = new Date();
-      if (this.currentItems.length === REQUIRED_TICKER_COUNT) {
-        this.lastError = null;
-      }
-      this.notify(this.currentItems);
-    });
-  }
-
   onWatchlistChange(callback: WatchlistCallback): void {
     this.callbacks.push(callback);
   }
@@ -680,31 +685,10 @@ class TickerBotService {
   getStatus(): BotStatus {
     return {
       isRunning: this.isRunning,
-      source: this.source,
       lastSync: this.lastSync ? this.lastSync.toISOString() : null,
       symbolCount: this.currentItems.length,
       lastError: this.lastError,
     };
-  }
-
-  async setSource(source: TickerSourceMode): Promise<BotStatus> {
-    if (this.source === source) {
-      return this.getStatus();
-    }
-
-    const wasRunning = this.isRunning;
-    if (wasRunning) {
-      await this.stop();
-    }
-
-    this.source = source;
-    this.lastError = null;
-
-    if (wasRunning) {
-      await this.start();
-    }
-
-    return this.getStatus();
   }
 
   async start(): Promise<BotStatus> {
@@ -714,14 +698,6 @@ class TickerBotService {
 
     this.isRunning = true;
     this.lastError = null;
-
-    if (this.source === 'excel') {
-      this.currentItems = this.normalizeToTwenty(excelService.loadWatchlist());
-      excelService.startWatching();
-      this.lastSync = new Date();
-      this.notify(this.currentItems);
-      return this.getStatus();
-    }
 
     await this.playwrightSource.start();
     await this.pullFromPlaywright();
@@ -747,11 +723,7 @@ class TickerBotService {
       this.pollTimer = null;
     }
 
-    if (this.source === 'excel') {
-      excelService.stopWatching();
-    } else {
-      await this.playwrightSource.stop();
-    }
+    await this.playwrightSource.stop();
 
     return this.getStatus();
   }
@@ -769,7 +741,7 @@ class TickerBotService {
   }
 
   private async withPlaywright<T>(action: () => Promise<T>): Promise<T> {
-    const canReuse = this.isRunning && this.source === 'playwright';
+    const canReuse = this.isRunning;
     if (!canReuse) {
       await this.playwrightSource.start();
     }
@@ -783,7 +755,7 @@ class TickerBotService {
   }
 
   private async pullFromPlaywright(): Promise<void> {
-    if (!this.isRunning || this.source !== 'playwright') {
+    if (!this.isRunning) {
       return;
     }
 

@@ -82,23 +82,6 @@ app.post('/api/bot/stop', botRateLimit, async (_req, res) => {
   }
 });
 
-app.post('/api/bot/source', botRateLimit, async (req, res) => {
-  const source = req.body?.source;
-  if (source !== 'excel' && source !== 'playwright') {
-    res.status(400).json({ error: 'source must be "excel" or "playwright"' });
-    return;
-  }
-
-  try {
-    const status = await priceSocketServer.setTickerSource(source);
-    res.json(status);
-  } catch (err) {
-    res.status(500).json({
-      error: err instanceof Error ? err.message : 'Failed to set bot source',
-    });
-  }
-});
-
 app.get('/api/bot/playwright-preview', async (req, res) => {
   const limitRaw = req.query.limit;
   const limitNum = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : 25;

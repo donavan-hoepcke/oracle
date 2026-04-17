@@ -11,10 +11,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(__dirname, '../../.env') });
 
 const configSchema = z.object({
-  watchlist_dir: z.string(),
   check_interval: z.number().positive().default(30),
   alert_threshold: z.number().positive().default(0.03),
-  ticker_source: z.enum(['excel', 'playwright']).default('excel'),
   bot: z
     .object({
       poll_interval_sec: z.number().positive().default(30),

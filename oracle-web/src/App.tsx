@@ -6,9 +6,6 @@ import { StatusBar } from './components/StatusBar';
 import { StockTable } from './components/StockTable';
 import { TradeIdeasPage } from './components/TradeIdeasPage';
 import { PremarketSyncBanner } from './components/PremarketSyncBanner';
-import { TickerSourceMode } from './types';
-
-const VALID_SOURCES: TickerSourceMode[] = ['excel', 'playwright'];
 
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   return isActive
@@ -22,19 +19,6 @@ function App() {
   const { candidates, asOf, isLoading, error, refresh } = useTradeCandidates(20);
 
   const { hasPermission, requestPermission } = useNotifications(alerts, clearAlert);
-
-  const updateSource = async (source: TickerSourceMode) => {
-    try {
-      const res = await fetch('/api/bot/source', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source }),
-      });
-      if (!res.ok) console.error('Failed to update source:', res.status);
-    } catch (err) {
-      console.error('Failed to update source:', err);
-    }
-  };
 
   const startBot = async () => {
     try {
@@ -91,23 +75,6 @@ function App() {
         <PremarketSyncBanner marketStatus={marketStatus} botStatus={botStatus} stocks={stocks} />
 
         <div className="bg-white rounded-lg shadow p-4 mb-4 flex flex-wrap items-center gap-3">
-          <label htmlFor="ticker-source" className="text-sm text-gray-600 font-medium">Ticker Source</label>
-
-          <select
-            id="ticker-source"
-            className="border border-gray-300 rounded px-2 py-1 text-sm"
-            value={botStatus?.source ?? 'excel'}
-            onChange={(e) => {
-              const value = e.target.value;
-              if (VALID_SOURCES.includes(value as TickerSourceMode)) {
-                updateSource(value as TickerSourceMode);
-              }
-            }}
-          >
-            <option value="excel">Excel Watchlist</option>
-            <option value="playwright">Playwright Web Page</option>
-          </select>
-
           <button
             onClick={startBot}
             className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm"
