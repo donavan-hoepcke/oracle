@@ -25,7 +25,7 @@ bot:
     password_env: "ORACLE_WEB_PASSWORD"
     headless: false
     use_existing_chrome: true
-    chrome_cdp_url: "http://127.0.0.1:9222"
+    chrome_cdp_url: "http://127.0.0.1:9223"
     oracle_expected_columns:
       - "symbol"
       - "stop"
