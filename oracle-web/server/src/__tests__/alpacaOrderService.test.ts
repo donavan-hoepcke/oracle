@@ -147,14 +147,37 @@ describe('AlpacaOrderService', () => {
     it('fetches order by ID', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ id: 'order-123', status: 'filled', filled_avg_price: '0.45', filled_qty: '100' }),
+        json: async () => ({ id: 'order-123', symbol: 'AGAE', status: 'filled', filled_avg_price: '0.45', filled_qty: '100' }),
       });
 
       const order = await alpacaOrderService.getOrder('order-123');
       expect(order.id).toBe('order-123');
+      expect(order.symbol).toBe('AGAE');
       expect(order.status).toBe('filled');
       expect(order.filledAvgPrice).toBe(0.45);
       expect(order.filledQty).toBe(100);
+    });
+  });
+
+  describe('getOpenOrders', () => {
+    it('fetches open orders with symbols', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          { id: 'order-a', symbol: 'AGAE', status: 'new', filled_avg_price: null, filled_qty: null },
+          { id: 'order-b', symbol: 'IMMP', status: 'new', filled_avg_price: null, filled_qty: null },
+        ],
+      });
+
+      const orders = await alpacaOrderService.getOpenOrders();
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://paper-api.alpaca.markets/v2/orders?status=open',
+        expect.any(Object),
+      );
+      expect(orders).toHaveLength(2);
+      expect(orders[0].symbol).toBe('AGAE');
+      expect(orders[1].symbol).toBe('IMMP');
     });
   });
 });

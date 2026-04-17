@@ -66,11 +66,32 @@ export class ExecutionService {
     if (!this.enabled) return;
 
     const account = await this.buildAccountState();
+    const reservedSymbols = await this.getReservedSymbols();
 
     await this.checkPendingOrders();
     await this.cancelStaleOrders();
     await this.manageFilled(stocks);
-    await this.evaluateNewEntries(candidates, account);
+    await this.evaluateNewEntries(candidates, account, reservedSymbols);
+  }
+
+  /**
+   * Symbols that already have a position or open order at Alpaca.
+   * Used to avoid placing duplicate orders after a bot restart or when
+   * the in-process ledger has drifted from Alpaca's state.
+   */
+  private async getReservedSymbols(): Promise<Set<string>> {
+    const reserved = new Set<string>();
+    try {
+      const [positions, openOrders] = await Promise.all([
+        alpacaOrderService.getPositions(),
+        alpacaOrderService.getOpenOrders(),
+      ]);
+      for (const p of positions) reserved.add(p.symbol);
+      for (const o of openOrders) reserved.add(o.symbol);
+    } catch (err) {
+      console.error('Failed to fetch Alpaca state for dup check:', err);
+    }
+    return reserved;
   }
 
   async flattenAll(): Promise<void> {
@@ -107,9 +128,14 @@ export class ExecutionService {
     };
   }
 
-  private async evaluateNewEntries(candidates: TradeCandidate[], account: AccountState): Promise<void> {
+  private async evaluateNewEntries(
+    candidates: TradeCandidate[],
+    account: AccountState,
+    reservedSymbols: Set<string>
+  ): Promise<void> {
     for (const candidate of candidates) {
       if (this.activeTrades.some(t => t.symbol === candidate.symbol)) continue;
+      if (reservedSymbols.has(candidate.symbol)) continue;
       if (candidate.suggestedEntry <= 0 || candidate.suggestedStop <= 0) continue;
 
       const filterResult = tradeFilterService.filterCandidate(candidate, account);
@@ -149,6 +175,7 @@ export class ExecutionService {
 
         account.openPositionCount++;
         account.deployedCapital += size.costBasis;
+        reservedSymbols.add(candidate.symbol);
       } catch (err) {
         console.error(`Failed to submit order for ${candidate.symbol}:`, err);
       }
