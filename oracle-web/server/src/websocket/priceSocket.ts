@@ -63,6 +63,7 @@ class PriceSocketServer {
   private stockStates: Map<string, StockState> = new Map();
   private priceHistory: Map<string, PriceHistoryEntry[]> = new Map();
   private readonly TREND_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+  private fetchInFlight = false;
 
   initialize(server: Server): void {
     this.wss = new WebSocketServer({ server, path: '/ws' });
@@ -224,6 +225,19 @@ class PriceSocketServer {
   }
 
   private async fetchPrices(): Promise<void> {
+    if (this.fetchInFlight) {
+      console.log('Previous fetch still running, skipping this cycle');
+      return;
+    }
+    this.fetchInFlight = true;
+    try {
+      await this.runFetchCycle();
+    } finally {
+      this.fetchInFlight = false;
+    }
+  }
+
+  private async runFetchCycle(): Promise<void> {
     const symbols = Array.from(this.stockStates.keys());
     if (symbols.length === 0) return;
 
