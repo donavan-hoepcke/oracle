@@ -54,6 +54,9 @@ export class ExecutionService {
   private activeTrades: ActiveTrade[] = [];
   private ledger: TradeLedgerEntry[] = [];
   private rejections: Map<string, FilterRejection> = new Map();
+  // Symbol -> unix ms when cooldown expires. Populated on bad exits (stop,
+  // trailing_stop, circuit_breaker) to prevent same-session re-entries.
+  private cooldown: Map<string, number> = new Map();
   private startOfDayEquity: number | null = null;
   private enabled = config.execution.enabled;
 
@@ -63,6 +66,25 @@ export class ExecutionService {
 
   getRejectionForSymbol(symbol: string): FilterRejection | undefined {
     return this.rejections.get(symbol);
+  }
+
+  getCooldownSymbols(): Array<{ symbol: string; expiresAt: string }> {
+    const now = Date.now();
+    const out: Array<{ symbol: string; expiresAt: string }> = [];
+    for (const [symbol, ms] of this.cooldown.entries()) {
+      if (ms > now) out.push({ symbol, expiresAt: new Date(ms).toISOString() });
+    }
+    return out;
+  }
+
+  isOnCooldown(symbol: string): boolean {
+    const expires = this.cooldown.get(symbol);
+    if (!expires) return false;
+    if (expires <= Date.now()) {
+      this.cooldown.delete(symbol);
+      return false;
+    }
+    return true;
   }
 
   getActiveTrades(): ActiveTrade[] {
@@ -238,6 +260,12 @@ export class ExecutionService {
       }
       if (reservedSymbols.has(candidate.symbol)) {
         this.rejections.delete(candidate.symbol);
+        continue;
+      }
+      if (this.isOnCooldown(candidate.symbol)) {
+        const expires = this.cooldown.get(candidate.symbol) ?? 0;
+        const mins = Math.round((expires - Date.now()) / 60000);
+        this.recordRejection(candidate, `cooldown: re-entry blocked for ~${mins}m after prior stop exit`);
         continue;
       }
       if (candidate.suggestedEntry <= 0 || candidate.suggestedStop <= 0) {
@@ -419,6 +447,14 @@ export class ExecutionService {
       exitDetail: detail || this.defaultExitDetail(reason),
       rationale: trade.rationale,
     });
+
+    // Block same-session re-entries after bad exits to prevent churn.
+    if (reason === 'stop' || reason === 'trailing_stop' || reason === 'circuit_breaker') {
+      const cooldownMs = config.execution.cooldown_after_stop_ms;
+      if (cooldownMs > 0) {
+        this.cooldown.set(trade.symbol, Date.now() + cooldownMs);
+      }
+    }
 
     this.activeTrades = this.activeTrades.filter(t => t !== trade);
   }

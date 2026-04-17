@@ -201,6 +201,8 @@ app.get('/api/scanner', async (_req, res) => {
 
     const activeTrades = executionService.getActiveTrades();
     const rejections = executionService.getRejections();
+    const cooldowns = executionService.getCooldownSymbols();
+    const cooldownMap = new Map(cooldowns.map((c) => [c.symbol, c]));
     const rejectionMap = new Map(rejections.map((r) => [r.symbol, r]));
     const candidateMap = new Map(candidates.map((c) => [c.symbol, c]));
     const activeMap = new Map(activeTrades.map((t) => [t.symbol, t]));
@@ -284,6 +286,7 @@ app.get('/api/scanner', async (_req, res) => {
               setup: rejection.setup,
             }
           : null,
+        cooldownExpiresAt: cooldownMap.get(stock.symbol)?.expiresAt ?? null,
       };
     });
 

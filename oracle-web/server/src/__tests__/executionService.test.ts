@@ -12,6 +12,9 @@ vi.mock('../config.js', () => ({
       max_risk_pct: 0.10,
       red_candle_vol_mult: 1.5,
       momentum_gap_pct: 0.03,
+      momentum_max_chase_pct: 0.05,
+      cooldown_after_stop_ms: 60 * 60 * 1000,
+      require_uptrend_for_momentum: true,
       trailing_breakeven_r: 1.0,
       trailing_start_r: 2.0,
       trailing_distance_r: 1.0,
@@ -183,6 +186,40 @@ describe('ExecutionService', () => {
       expect(service.getActiveTrades()).toHaveLength(0);
       expect(service.getLedger()).toHaveLength(1);
       expect(service.getLedger()[0].exitReason).toBe('stop');
+    });
+  });
+
+  describe('cooldown after stop', () => {
+    it('blocks same-session re-entry for a symbol that just stopped out', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Price drops below stop -> bot exits
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.44)]);
+      expect(service.getActiveTrades()).toHaveLength(0);
+      expect(service.getLedger()).toHaveLength(1);
+
+      // Next cycle, same symbol shows up as a candidate -> must be blocked
+      mockOrderService.submitOrder.mockClear();
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.52)]);
+      expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
+      expect(service.getCooldownSymbols().map((c) => c.symbol)).toContain('AGAE');
+    });
+
+    it('does not block re-entry for a symbol that exited on target', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.60)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Price reaches target -> clean exit, no cooldown
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.61)]);
+      expect(service.getLedger()[0].exitReason).toBe('target');
+      expect(service.getCooldownSymbols().map((c) => c.symbol)).not.toContain('AGAE');
     });
   });
 
