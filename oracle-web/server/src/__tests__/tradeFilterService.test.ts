@@ -18,6 +18,8 @@ import { tradeFilterService, AccountState } from '../services/tradeFilterService
 import { TradeCandidate } from '../services/ruleEngineService.js';
 
 function makeCandidate(overrides: Partial<TradeCandidate> & { suggestedEntry: number; suggestedStop: number }): TradeCandidate {
+  const { suggestedEntry, suggestedStop, suggestedTarget: overrideTarget, ...rest } = overrides;
+  const suggestedTarget = overrideTarget ?? suggestedEntry * 1.5;
   return {
     symbol: 'TEST',
     score: 70,
@@ -28,17 +30,17 @@ function makeCandidate(overrides: Partial<TradeCandidate> & { suggestedEntry: nu
     executionScore: 50,
     messageContext: { symbol: 'TEST', mentionCount: 0, convictionScore: 0, tagCounts: {}, latestMessages: [] },
     snapshot: {
-      currentPrice: overrides.suggestedEntry,
-      buyZonePrice: overrides.suggestedEntry,
-      stopPrice: overrides.suggestedStop,
-      sellZonePrice: (overrides as any).suggestedTarget ?? overrides.suggestedEntry * 1.5,
+      currentPrice: suggestedEntry,
+      buyZonePrice: suggestedEntry,
+      stopPrice: suggestedStop,
+      sellZonePrice: suggestedTarget,
       profitDeltaPct: null,
       trend30m: 'up',
     },
-    suggestedEntry: overrides.suggestedEntry,
-    suggestedStop: overrides.suggestedStop,
-    suggestedTarget: (overrides as any).suggestedTarget ?? overrides.suggestedEntry * 1.5,
-    ...overrides,
+    suggestedEntry,
+    suggestedStop,
+    suggestedTarget,
+    ...rest,
   } as TradeCandidate;
 }
 
