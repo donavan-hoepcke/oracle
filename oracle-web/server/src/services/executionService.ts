@@ -65,6 +65,8 @@ export class ExecutionService {
   async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[]): Promise<void> {
     if (!this.enabled) return;
 
+    await this.reconcileWithAlpaca(stocks);
+
     const account = await this.buildAccountState();
     const reservedSymbols = await this.getReservedSymbols();
 
@@ -72,6 +74,60 @@ export class ExecutionService {
     await this.cancelStaleOrders();
     await this.manageFilled(stocks);
     await this.evaluateNewEntries(candidates, account, reservedSymbols);
+  }
+
+  /**
+   * Adopt any Alpaca positions that are not already tracked in activeTrades.
+   * Protects against server restarts clearing the in-memory ledger while
+   * positions remain at the broker. Uses the live Oracle watchlist for stop
+   * and target where available; falls back to max_risk_pct-derived defaults.
+   */
+  private async reconcileWithAlpaca(stocks: StockState[]): Promise<void> {
+    let positions;
+    try {
+      positions = await alpacaOrderService.getPositions();
+    } catch (err) {
+      console.error('Reconcile failed:', err);
+      return;
+    }
+    const stockMap = new Map(stocks.map((s) => [s.symbol, s]));
+    const exec = config.execution;
+
+    for (const pos of positions) {
+      if (this.activeTrades.some((t) => t.symbol === pos.symbol)) continue;
+
+      const stock = stockMap.get(pos.symbol);
+      const entry = pos.avgEntryPrice;
+      const initialStop =
+        stock?.stopPrice && stock.stopPrice > 0 && stock.stopPrice < entry
+          ? stock.stopPrice
+          : entry * (1 - exec.max_risk_pct);
+      const target =
+        stock?.sellZonePrice && stock.sellZonePrice > entry
+          ? stock.sellZonePrice
+          : entry * (1 + exec.max_risk_pct * 3);
+
+      this.activeTrades.push({
+        symbol: pos.symbol,
+        strategy: 'momentum_continuation',
+        entryPrice: entry,
+        entryTime: new Date(),
+        shares: pos.qty,
+        initialStop,
+        currentStop: initialStop,
+        target,
+        riskPerShare: entry - initialStop,
+        orderId: '',
+        status: 'filled',
+        trailingState: 'initial',
+        pendingSince: new Date(),
+      });
+
+      console.log(
+        `Adopted orphaned position: ${pos.symbol} qty=${pos.qty} entry=${entry.toFixed(3)} ` +
+          `stop=${initialStop.toFixed(3)} target=${target.toFixed(3)}`,
+      );
+    }
   }
 
   /**
