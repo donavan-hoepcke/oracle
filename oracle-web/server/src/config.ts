@@ -61,6 +61,23 @@ const configSchema = z.object({
         .default({}),
     })
     .default({}),
+  execution: z
+    .object({
+      enabled: z.boolean().default(false),
+      paper: z.boolean().default(true),
+      risk_per_trade: z.number().positive().default(100),
+      max_positions: z.number().int().positive().default(8),
+      max_capital_pct: z.number().min(0.01).max(1).default(0.5),
+      max_daily_drawdown_pct: z.number().min(0.01).max(1).default(0.05),
+      max_risk_pct: z.number().min(0.01).max(1).default(0.1),
+      red_candle_vol_mult: z.number().positive().default(1.5),
+      momentum_gap_pct: z.number().min(0).max(1).default(0.03),
+      trailing_breakeven_r: z.number().positive().default(1.0),
+      trailing_start_r: z.number().positive().default(2.0),
+      trailing_distance_r: z.number().positive().default(1.0),
+      eod_flatten_time: z.string().regex(/^\d{2}:\d{2}$/).default('15:50'),
+    })
+    .default({}),
   market_hours: z.object({
     open: z.string().regex(/^\d{2}:\d{2}$/),
     close: z.string().regex(/^\d{2}:\d{2}$/),

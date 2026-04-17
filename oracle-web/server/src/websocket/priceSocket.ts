@@ -26,6 +26,7 @@ export interface StockState {
   relativeVolume?: number | null;
   floatMillions?: number | null;
   gapPercent?: number | null;
+  lastPrice?: number | null;
   currentPrice: number | null;
   change: number | null;
   changePercent: number | null;
@@ -51,8 +52,10 @@ type WebSocketMessage =
   | { type: 'price_update'; data: { stocks: StockState[] } }
   | { type: 'status'; data: { marketStatus: MarketStatus; botStatus: BotStatus } }
   | { type: 'alert'; data: StockState }
-  | { type: 'setup_alert'; data: { symbol: string; setup: string; score: number; rationale: string[] } };
+  | { type: 'setup_alert'; data: { symbol: string; setup: string; score: number; rationale: string[] } }
+  | { type: 'trade_update'; data: { active: ActiveTrade[]; dailyPnl: number; circuitBreakerActive: boolean } };
 import { ruleEngineService } from '../services/ruleEngineService.js';
+import { executionService, ActiveTrade } from '../services/executionService.js';
 
 class PriceSocketServer {
   private wss: WebSocketServer | null = null;
@@ -164,6 +167,7 @@ class PriceSocketServer {
       relativeVolume: item.relativeVolume ?? null,
       floatMillions: item.floatMillions ?? null,
       gapPercent: item.gapPercent ?? null,
+      lastPrice: item.lastPrice ?? null,
       currentPrice: null,
       change: null,
       changePercent: null,
@@ -318,9 +322,10 @@ class PriceSocketServer {
       });
     }
 
-    // Broadcast setup alerts for high-quality setups
+    // Get ranked candidates for alerts and execution
+    let candidates: Awaited<ReturnType<typeof ruleEngineService.getRankedCandidates>> = [];
     try {
-      const candidates = await ruleEngineService.getRankedCandidates(Array.from(this.stockStates.values()), 20);
+      candidates = await ruleEngineService.getRankedCandidates(Array.from(this.stockStates.values()), 20);
       for (const candidate of candidates) {
         // Only alert for top-scoring setups, score threshold can be tuned
         if (
@@ -340,6 +345,36 @@ class PriceSocketServer {
       }
     } catch (err) {
       console.error('Error broadcasting setup alerts:', err);
+    }
+
+    // EOD flatten check
+    if (config.execution.enabled) {
+      const { toZonedTime } = await import('date-fns-tz');
+      const now = toZonedTime(new Date(), config.market_hours.timezone);
+      const [flatH, flatM] = config.execution.eod_flatten_time.split(':').map(Number);
+      const flatMinutes = flatH * 60 + flatM;
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      if (nowMinutes >= flatMinutes && executionService.getActiveTrades().length > 0) {
+        console.log('EOD flatten triggered');
+        await executionService.flattenAll();
+      }
+    }
+
+    // Run execution engine
+    if (config.execution.enabled) {
+      try {
+        await executionService.onPriceCycle(candidates, Array.from(this.stockStates.values()));
+        this.broadcast({
+          type: 'trade_update',
+          data: {
+            active: executionService.getActiveTrades(),
+            dailyPnl: executionService.getDailyPnl(),
+            circuitBreakerActive: false,
+          },
+        });
+      } catch (err) {
+        console.error('Execution cycle error:', err);
+      }
     }
   }
 

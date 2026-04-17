@@ -9,6 +9,7 @@ import { priceSocketServer, StockState } from './websocket/priceSocket.js';
 import { getMarketStatus } from './services/marketHoursService.js';
 import { messageService } from './services/messageService.js';
 import { ruleEngineService } from './services/ruleEngineService.js';
+import { executionService } from './services/executionService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -179,6 +180,51 @@ app.get('/api/trade-candidates', async (_req, res) => {
     res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to compute trade candidates',
     });
+  }
+});
+
+app.get('/api/trades', (_req, res) => {
+  res.json({
+    active: executionService.getActiveTrades(),
+    closed: executionService.getLedger(),
+    dailyPnl: executionService.getDailyPnl(),
+  });
+});
+
+app.get('/api/execution/status', async (_req, res) => {
+  try {
+    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+    const account = await alpacaOrderService.getAccount();
+    res.json({
+      enabled: executionService.isEnabled(),
+      paper: config.execution.paper,
+      openPositions: executionService.getActiveTrades().length,
+      maxPositions: config.execution.max_positions,
+      deployedCapital: account.portfolioValue - account.cash,
+      availableCash: account.cash,
+      dailyPnl: executionService.getDailyPnl(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to get execution status' });
+  }
+});
+
+app.post('/api/execution/toggle', botRateLimit, (req, res) => {
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'enabled must be a boolean' });
+    return;
+  }
+  executionService.setEnabled(enabled);
+  res.json({ enabled: executionService.isEnabled() });
+});
+
+app.post('/api/execution/flatten', botRateLimit, async (_req, res) => {
+  try {
+    await executionService.flattenAll();
+    res.json({ message: 'All positions flattened', trades: executionService.getLedger().length });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to flatten' });
   }
 });
 

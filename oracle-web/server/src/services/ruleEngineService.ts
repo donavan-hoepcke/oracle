@@ -1,6 +1,7 @@
 import { StockState } from '../websocket/priceSocket.js';
 import { fetchAlpaca1MinBars } from './alpacaBarService.js';
 import { SymbolMessageContext, messageService, SetupTag } from './messageService.js';
+import { config } from '../config.js';
 
 export type CandidateSetup =
   | 'red_candle_theory'
@@ -35,6 +36,9 @@ export interface TradeCandidate {
     profitDeltaPct: number | null | undefined;
     trend30m: StockState['trend30m'];
   };
+  suggestedEntry: number;
+  suggestedStop: number;
+  suggestedTarget: number;
 }
 
 class RuleEngineService {
@@ -79,6 +83,12 @@ class RuleEngineService {
       rationale.push(...redCandleSignal.details);
     }
 
+    const suggestedEntry = stock.currentPrice ?? stock.buyZonePrice ?? 0;
+    const suggestedStop = redCandleSignal.matched && redCandleSignal.stop
+      ? redCandleSignal.stop
+      : (stock.stopPrice ?? 0);
+    const suggestedTarget = stock.sellZonePrice ?? 0;
+
     return {
       symbol: stock.symbol,
       score: Math.round(weighted * 100) / 100,
@@ -96,6 +106,9 @@ class RuleEngineService {
         profitDeltaPct: stock.profitDeltaPct,
         trend30m: stock.trend30m,
       },
+      suggestedEntry,
+      suggestedStop,
+      suggestedTarget,
     };
   }
 
@@ -172,7 +185,14 @@ class RuleEngineService {
       stock.stopPrice !== null &&
       stock.trend30m !== 'down'
     ) {
-      return 'momentum_continuation';
+      const lastPrice = stock.lastPrice;
+      const currentPrice = stock.currentPrice;
+      const hasGap = lastPrice && lastPrice > 0 && currentPrice !== null
+        ? (currentPrice - lastPrice) / lastPrice >= config.execution.momentum_gap_pct
+        : true;
+      if (hasGap) {
+        return 'momentum_continuation';
+      }
     }
 
     if (
@@ -188,6 +208,14 @@ class RuleEngineService {
     }
 
     if (stock.buyZonePrice !== null && stock.stopPrice !== null && stock.sellZonePrice !== null) {
+      const lastPrice = stock.lastPrice;
+      const currentPrice = stock.currentPrice;
+      if (lastPrice && lastPrice > 0 && currentPrice !== null) {
+        const gapPct = (currentPrice - lastPrice) / lastPrice;
+        if (gapPct < config.execution.momentum_gap_pct) {
+          return null;
+        }
+      }
       // Fallback candidate when structure is good but message tags are sparse.
       return 'momentum_continuation';
     }
@@ -222,7 +250,7 @@ class RuleEngineService {
       }
 
       const reclaim = latest.close > triggerBar.high;
-      const volumeConfirm = latest.volume >= avgRecentVolume * 1.15;
+      const volumeConfirm = latest.volume >= avgRecentVolume * config.execution.red_candle_vol_mult;
       const risk = triggerBar.high - triggerBar.low;
       const reward = stock.sellZonePrice !== null && stock.sellZonePrice !== undefined
         ? stock.sellZonePrice - triggerBar.high
