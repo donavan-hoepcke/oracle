@@ -206,7 +206,17 @@ export function ScannerPage({ snapshot, isLoading, error, onRefresh }: ScannerPa
                 const badge = STATUS_BADGES[r.status];
                 return (
                   <tr key={r.symbol} className="border-t border-gray-100 hover:bg-gray-50">
-                    <td className="px-3 py-2 font-semibold">{r.symbol}</td>
+                    <td className="px-3 py-2 font-semibold">
+                      {r.symbol}
+                      {r.washSaleRisk && (
+                        <span
+                          className="ml-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800"
+                          title="Traded in last 30 days — tighter entry bar applies (wash-sale awareness)"
+                        >
+                          30d
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       <span className={`text-xs px-2 py-0.5 rounded font-semibold ${badge.classes}`}>
                         {badge.label}
