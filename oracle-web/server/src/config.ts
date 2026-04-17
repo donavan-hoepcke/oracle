@@ -90,6 +90,12 @@ const configSchema = z.object({
     close: z.string().regex(/^\d{2}:\d{2}$/),
     timezone: z.string().default('America/New_York'),
   }),
+  recording: z
+    .object({
+      enabled: z.boolean().default(true),
+      dir: z.string().default('F:/oracle_data/recordings'),
+    })
+    .default({}),
   port: z.number().positive().default(3001),
 });
 

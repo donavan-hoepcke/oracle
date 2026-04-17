@@ -64,4 +64,7 @@ market_hours:
   open: "09:30"
   close: "16:00"
   timezone: "America/New_York"
+recording:
+  enabled: true
+  dir: "F:/oracle_data/recordings"
 port: 3001
