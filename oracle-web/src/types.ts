@@ -72,6 +72,25 @@ export type CandidateSetup =
   | 'pullback_reclaim'
   | 'crowded_extension_watch';
 
+export interface TradeCandidate {
+  symbol: string;
+  score: number;
+  setup: CandidateSetup;
+  rationale: string[];
+  oracleScore: number;
+  messageScore: number;
+  executionScore: number;
+  messageContext: SymbolMessageContext;
+  snapshot: {
+    currentPrice: number | null;
+    buyZonePrice: number | null | undefined;
+    stopPrice: number | null | undefined;
+    sellZonePrice: number | null | undefined;
+    profitDeltaPct: number | null | undefined;
+    trend30m: 'up' | 'down' | 'flat' | null;
+  };
+}
+
 export type TrailingState = 'initial' | 'breakeven' | 'trailing';
 
 export type ExitReason = 'stop' | 'trailing_stop' | 'target' | 'eod' | 'circuit_breaker';
@@ -130,21 +149,50 @@ export interface JournalSnapshot {
   closed: ClosedTrade[];
 }
 
-export interface TradeCandidate {
+export type ScannerStatus = 'traded' | 'blown_out' | 'rejected' | 'candidate' | 'setup' | 'watch' | 'dead';
+
+export interface ScannerRow {
   symbol: string;
-  score: number;
-  setup: CandidateSetup;
-  rationale: string[];
-  oracleScore: number;
-  messageScore: number;
-  executionScore: number;
-  messageContext: SymbolMessageContext;
-  snapshot: {
-    currentPrice: number | null;
-    buyZonePrice: number | null | undefined;
-    stopPrice: number | null | undefined;
-    sellZonePrice: number | null | undefined;
-    profitDeltaPct: number | null | undefined;
-    trend30m: 'up' | 'down' | 'flat' | null;
-  };
+  status: ScannerStatus;
+  currentPrice: number | null;
+  changePercent: number | null;
+  stopPrice: number | null;
+  buyZonePrice: number | null;
+  sellZonePrice: number | null;
+  lastPrice: number | null;
+  premarketVolume: number | null;
+  relativeVolume: number | null;
+  floatMillions: number | null;
+  signal: SignalType;
+  trend30m: 'up' | 'down' | 'flat' | null;
+  pctToStop: number | null;
+  pctToBuyZone: number | null;
+  pctToSellZone: number | null;
+  activeTrade: {
+    entryPrice: number;
+    currentStop: number;
+    target: number;
+    shares: number;
+    trailingState: TrailingState;
+    status: 'pending' | 'filled' | 'exiting';
+    rationale: string[];
+    unrealizedPl: number | null;
+    rMultiple: number | null;
+  } | null;
+  candidate: {
+    score: number;
+    setup: CandidateSetup;
+    rationale: string[];
+  } | null;
+  rejection: {
+    reason: string;
+    score: number;
+    setup: CandidateSetup;
+  } | null;
+}
+
+export interface ScannerSnapshot {
+  rows: ScannerRow[];
+  asOf: string;
+  marketStatus: MarketStatus;
 }

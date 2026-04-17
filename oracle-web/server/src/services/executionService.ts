@@ -39,11 +39,31 @@ export interface TradeLedgerEntry {
 
 const PENDING_TIMEOUT_MS = 30 * 60 * 1000;
 
+export interface FilterRejection {
+  symbol: string;
+  reason: string;
+  score: number;
+  setup: CandidateSetup;
+  suggestedEntry: number;
+  suggestedStop: number;
+  suggestedTarget: number;
+  timestamp: Date;
+}
+
 export class ExecutionService {
   private activeTrades: ActiveTrade[] = [];
   private ledger: TradeLedgerEntry[] = [];
+  private rejections: Map<string, FilterRejection> = new Map();
   private startOfDayEquity: number | null = null;
   private enabled = config.execution.enabled;
+
+  getRejections(): FilterRejection[] {
+    return Array.from(this.rejections.values());
+  }
+
+  getRejectionForSymbol(symbol: string): FilterRejection | undefined {
+    return this.rejections.get(symbol);
+  }
 
   getActiveTrades(): ActiveTrade[] {
     return [...this.activeTrades];
@@ -197,16 +217,39 @@ export class ExecutionService {
     account: AccountState,
     reservedSymbols: Set<string>
   ): Promise<void> {
+    // Rebuild rejection map each cycle so stale entries clear naturally.
+    const currentCandidateSymbols = new Set(candidates.map((c) => c.symbol));
+    for (const symbol of Array.from(this.rejections.keys())) {
+      if (!currentCandidateSymbols.has(symbol)) this.rejections.delete(symbol);
+    }
+
     for (const candidate of candidates) {
-      if (this.activeTrades.some(t => t.symbol === candidate.symbol)) continue;
-      if (reservedSymbols.has(candidate.symbol)) continue;
-      if (candidate.suggestedEntry <= 0 || candidate.suggestedStop <= 0) continue;
+      if (this.activeTrades.some(t => t.symbol === candidate.symbol)) {
+        this.rejections.delete(candidate.symbol);
+        continue;
+      }
+      if (reservedSymbols.has(candidate.symbol)) {
+        this.rejections.delete(candidate.symbol);
+        continue;
+      }
+      if (candidate.suggestedEntry <= 0 || candidate.suggestedStop <= 0) {
+        this.recordRejection(candidate, 'missing suggested entry/stop');
+        continue;
+      }
 
       const filterResult = tradeFilterService.filterCandidate(candidate, account);
-      if (!filterResult.passed) continue;
+      if (!filterResult.passed) {
+        this.recordRejection(candidate, filterResult.reason ?? 'unknown');
+        continue;
+      }
 
       const size = tradeFilterService.calculatePositionSize(candidate, account);
-      if (size.shares <= 0) continue;
+      if (size.shares <= 0) {
+        this.recordRejection(candidate, 'position size rounded to 0 shares');
+        continue;
+      }
+
+      this.rejections.delete(candidate.symbol);
 
       const orderType = candidate.setup === 'red_candle_theory' || candidate.setup === 'momentum_continuation'
         ? 'limit' as const
@@ -357,6 +400,19 @@ export class ExecutionService {
     });
 
     this.activeTrades = this.activeTrades.filter(t => t !== trade);
+  }
+
+  private recordRejection(candidate: TradeCandidate, reason: string): void {
+    this.rejections.set(candidate.symbol, {
+      symbol: candidate.symbol,
+      reason,
+      score: candidate.score,
+      setup: candidate.setup,
+      suggestedEntry: candidate.suggestedEntry,
+      suggestedStop: candidate.suggestedStop,
+      suggestedTarget: candidate.suggestedTarget,
+      timestamp: new Date(),
+    });
   }
 
   private defaultExitDetail(reason: TradeLedgerEntry['exitReason']): string {

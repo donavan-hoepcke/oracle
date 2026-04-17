@@ -191,6 +191,112 @@ app.get('/api/trades', (_req, res) => {
   });
 });
 
+app.get('/api/scanner', async (_req, res) => {
+  try {
+    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+    const stocks = priceSocketServer.getStockStates();
+    const positionsPromise = alpacaOrderService.getPositions().catch(() => []);
+    const candidates = await ruleEngineService.getRankedCandidates(stocks, 20);
+    const positions = await positionsPromise;
+
+    const activeTrades = executionService.getActiveTrades();
+    const rejections = executionService.getRejections();
+    const rejectionMap = new Map(rejections.map((r) => [r.symbol, r]));
+    const candidateMap = new Map(candidates.map((c) => [c.symbol, c]));
+    const activeMap = new Map(activeTrades.map((t) => [t.symbol, t]));
+    const positionMap = new Map(positions.map((p) => [p.symbol, p]));
+
+    const rows = stocks.map((stock) => {
+      const active = activeMap.get(stock.symbol);
+      const rejection = rejectionMap.get(stock.symbol);
+      const candidate = candidateMap.get(stock.symbol);
+      const position = positionMap.get(stock.symbol);
+
+      const current = stock.currentPrice;
+      const stop = stock.stopPrice ?? null;
+      const buy = stock.buyZonePrice ?? null;
+      const sell = stock.sellZonePrice ?? null;
+
+      let status: 'traded' | 'blown_out' | 'rejected' | 'candidate' | 'setup' | 'watch' | 'dead';
+      if (active) {
+        status = 'traded';
+      } else if (current !== null && sell !== null && current >= sell) {
+        status = 'blown_out';
+      } else if (current !== null && stop !== null && current <= stop) {
+        status = 'dead';
+      } else if (rejection) {
+        status = 'rejected';
+      } else if (candidate) {
+        status = 'candidate';
+      } else if (current !== null && buy !== null && stop !== null && current >= buy * 0.98 && current <= buy * 1.02) {
+        status = 'setup';
+      } else {
+        status = 'watch';
+      }
+
+      const pctTo = (to: number | null) =>
+        current !== null && to !== null && current > 0 ? ((to - current) / current) * 100 : null;
+
+      return {
+        symbol: stock.symbol,
+        status,
+        currentPrice: current,
+        changePercent: stock.changePercent,
+        stopPrice: stop,
+        buyZonePrice: buy,
+        sellZonePrice: sell,
+        lastPrice: stock.lastPrice ?? null,
+        premarketVolume: stock.premarketVolume ?? null,
+        relativeVolume: stock.relativeVolume ?? null,
+        floatMillions: stock.floatMillions ?? null,
+        signal: stock.signal,
+        trend30m: stock.trend30m,
+        pctToStop: pctTo(stop),
+        pctToBuyZone: pctTo(buy),
+        pctToSellZone: pctTo(sell),
+        activeTrade: active
+          ? {
+              entryPrice: active.entryPrice,
+              currentStop: active.currentStop,
+              target: active.target,
+              shares: active.shares,
+              trailingState: active.trailingState,
+              status: active.status,
+              rationale: active.rationale,
+              unrealizedPl: position?.unrealizedPl ?? null,
+              rMultiple:
+                active.riskPerShare > 0 && current !== null
+                  ? (current - active.entryPrice) / active.riskPerShare
+                  : null,
+            }
+          : null,
+        candidate: candidate
+          ? {
+              score: candidate.score,
+              setup: candidate.setup,
+              rationale: candidate.rationale,
+            }
+          : null,
+        rejection: rejection
+          ? {
+              reason: rejection.reason,
+              score: rejection.score,
+              setup: rejection.setup,
+            }
+          : null,
+      };
+    });
+
+    res.json({
+      rows,
+      asOf: new Date().toISOString(),
+      marketStatus: getMarketStatus(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build scanner' });
+  }
+});
+
 app.get('/api/execution/journal', async (_req, res) => {
   try {
     const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
