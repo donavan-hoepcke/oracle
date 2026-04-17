@@ -26,6 +26,7 @@ export interface StockState {
   relativeVolume?: number | null;
   floatMillions?: number | null;
   gapPercent?: number | null;
+  lastPrice?: number | null;
   currentPrice: number | null;
   change: number | null;
   changePercent: number | null;
@@ -164,6 +165,7 @@ class PriceSocketServer {
       relativeVolume: item.relativeVolume ?? null,
       floatMillions: item.floatMillions ?? null,
       gapPercent: item.gapPercent ?? null,
+      lastPrice: item.lastPrice ?? null,
       currentPrice: null,
       change: null,
       changePercent: null,
