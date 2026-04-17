@@ -72,6 +72,64 @@ export type CandidateSetup =
   | 'pullback_reclaim'
   | 'crowded_extension_watch';
 
+export type TrailingState = 'initial' | 'breakeven' | 'trailing';
+
+export type ExitReason = 'stop' | 'trailing_stop' | 'target' | 'eod' | 'circuit_breaker';
+
+export interface ActiveTrade {
+  symbol: string;
+  strategy: CandidateSetup;
+  entryPrice: number;
+  entryTime: string;
+  shares: number;
+  initialStop: number;
+  currentStop: number;
+  target: number;
+  riskPerShare: number;
+  status: 'pending' | 'filled' | 'exiting';
+  trailingState: TrailingState;
+  rationale: string[];
+  currentPrice?: number | null;
+  unrealizedPl?: number | null;
+}
+
+export interface ClosedTrade {
+  symbol: string;
+  strategy: CandidateSetup;
+  entryPrice: number;
+  entryTime: string;
+  exitPrice: number;
+  exitTime: string;
+  shares: number;
+  pnl: number;
+  pnlPct: number;
+  rMultiple: number;
+  exitReason: ExitReason;
+  exitDetail: string;
+  rationale: string[];
+}
+
+export interface JournalSnapshot {
+  account: {
+    equity: number;
+    cash: number;
+    buyingPower: number;
+    deployedCapital: number;
+    unrealizedPnl: number;
+    dailyRealizedPnl: number;
+    dailyTotalPnl: number;
+  };
+  execution: {
+    enabled: boolean;
+    paper: boolean;
+    openPositions: number;
+    pendingOrders: number;
+    maxPositions: number;
+  };
+  active: ActiveTrade[];
+  closed: ClosedTrade[];
+}
+
 export interface TradeCandidate {
   symbol: string;
   score: number;

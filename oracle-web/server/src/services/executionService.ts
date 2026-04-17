@@ -18,6 +18,7 @@ export interface ActiveTrade {
   status: 'pending' | 'filled' | 'exiting';
   trailingState: 'initial' | 'breakeven' | 'trailing';
   pendingSince: Date;
+  rationale: string[];
 }
 
 export interface TradeLedgerEntry {
@@ -32,6 +33,8 @@ export interface TradeLedgerEntry {
   pnlPct: number;
   rMultiple: number;
   exitReason: 'stop' | 'trailing_stop' | 'target' | 'eod' | 'circuit_breaker';
+  exitDetail: string;
+  rationale: string[];
 }
 
 const PENDING_TIMEOUT_MS = 30 * 60 * 1000;
@@ -121,6 +124,11 @@ export class ExecutionService {
         status: 'filled',
         trailingState: 'initial',
         pendingSince: new Date(),
+        rationale: [
+          `Adopted orphaned Alpaca position (original strategy unknown)`,
+          `Stop derived from ${stock?.stopPrice ? 'Oracle watchlist stopPrice' : `${(exec.max_risk_pct * 100).toFixed(0)}% max risk default`}`,
+          `Target derived from ${stock?.sellZonePrice && stock.sellZonePrice > entry ? 'Oracle watchlist sellZonePrice' : '3R default'}`,
+        ],
       });
 
       console.log(
@@ -152,7 +160,7 @@ export class ExecutionService {
 
   async flattenAll(): Promise<void> {
     for (const trade of this.activeTrades) {
-      await this.exitTrade(trade, trade.entryPrice, 'eod');
+      await this.exitTrade(trade, trade.entryPrice, 'eod', 'Manual flatten or EOD close');
     }
     try {
       await alpacaOrderService.closeAllPositions();
@@ -227,6 +235,7 @@ export class ExecutionService {
           status: 'pending',
           trailingState: 'initial',
           pendingSince: new Date(),
+          rationale: [...candidate.rationale, `Score ${candidate.score.toFixed(0)} | ${candidate.setup}`],
         });
 
         account.openPositionCount++;
@@ -282,13 +291,18 @@ export class ExecutionService {
 
       // Check stop
       if (currentPrice <= trade.currentStop) {
-        await this.exitTrade(trade, currentPrice, trade.trailingState !== 'initial' ? 'trailing_stop' : 'stop');
+        const reason = trade.trailingState !== 'initial' ? 'trailing_stop' : 'stop';
+        const detail = reason === 'trailing_stop'
+          ? `Price ${currentPrice.toFixed(3)} crossed trailing stop ${trade.currentStop.toFixed(3)} (state=${trade.trailingState})`
+          : `Price ${currentPrice.toFixed(3)} crossed initial stop ${trade.currentStop.toFixed(3)}`;
+        await this.exitTrade(trade, currentPrice, reason, detail);
         continue;
       }
 
       // Check target
       if (currentPrice >= trade.target) {
-        await this.exitTrade(trade, currentPrice, 'target');
+        const detail = `Price ${currentPrice.toFixed(3)} reached target ${trade.target.toFixed(3)}`;
+        await this.exitTrade(trade, currentPrice, 'target', detail);
         continue;
       }
 
@@ -312,7 +326,8 @@ export class ExecutionService {
   private async exitTrade(
     trade: ActiveTrade,
     exitPrice: number,
-    reason: TradeLedgerEntry['exitReason']
+    reason: TradeLedgerEntry['exitReason'],
+    detail: string = ''
   ): Promise<void> {
     trade.status = 'exiting';
     try {
@@ -337,9 +352,21 @@ export class ExecutionService {
       pnlPct,
       rMultiple,
       exitReason: reason,
+      exitDetail: detail || this.defaultExitDetail(reason),
+      rationale: trade.rationale,
     });
 
     this.activeTrades = this.activeTrades.filter(t => t !== trade);
+  }
+
+  private defaultExitDetail(reason: TradeLedgerEntry['exitReason']): string {
+    switch (reason) {
+      case 'eod': return 'End-of-day flatten (positions do not carry overnight)';
+      case 'circuit_breaker': return 'Daily drawdown circuit breaker triggered';
+      case 'stop': return 'Initial stop hit';
+      case 'trailing_stop': return 'Trailing stop hit';
+      case 'target': return 'Target price reached';
+    }
   }
 }
 

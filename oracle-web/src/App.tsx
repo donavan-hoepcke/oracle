@@ -1,10 +1,12 @@
 import { useWebSocket } from './hooks/useWebSocket';
 import { useNotifications } from './hooks/useNotifications';
 import { useTradeCandidates } from './hooks/useTradeCandidates';
+import { useJournal } from './hooks/useJournal';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { StatusBar } from './components/StatusBar';
 import { StockTable } from './components/StockTable';
 import { TradeIdeasPage } from './components/TradeIdeasPage';
+import { JournalPage } from './components/JournalPage';
 import { PremarketSyncBanner } from './components/PremarketSyncBanner';
 
 function navLinkClass({ isActive }: { isActive: boolean }): string {
@@ -17,6 +19,12 @@ function App() {
   const { stocks, marketStatus, botStatus, isConnected, lastUpdate, alerts, clearAlert } =
     useWebSocket();
   const { candidates, asOf, isLoading, error, refresh } = useTradeCandidates(20);
+  const {
+    snapshot: journalSnapshot,
+    isLoading: journalLoading,
+    error: journalError,
+    refresh: journalRefresh,
+  } = useJournal();
 
   const { hasPermission, requestPermission } = useNotifications(alerts, clearAlert);
 
@@ -56,6 +64,12 @@ function App() {
               className={navLinkClass}
             >
               Ideas
+            </NavLink>
+            <NavLink
+              to="/journal"
+              className={navLinkClass}
+            >
+              Journal
             </NavLink>
           </nav>
         </div>
@@ -118,6 +132,17 @@ function App() {
                 isLoading={isLoading}
                 error={error}
                 onRefresh={refresh}
+              />
+            }
+          />
+          <Route
+            path="/journal"
+            element={
+              <JournalPage
+                snapshot={journalSnapshot}
+                isLoading={journalLoading}
+                error={journalError}
+                onRefresh={journalRefresh}
               />
             }
           />
