@@ -14,8 +14,10 @@ function parseTime(timeStr: string): { hours: number; minutes: number } {
   return { hours, minutes };
 }
 
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString('en-US', {
+function formatTime(utcDate: Date): string {
+  // Format a real UTC Date directly with a timezone — avoids the double-conversion
+  // that happens when formatting an already-zoned Date (from toZonedTime).
+  return utcDate.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: true,
@@ -54,7 +56,7 @@ export function getMarketStatus(): MarketStatus {
 
   return {
     isOpen,
-    currentTime: formatTime(zonedNow),
+    currentTime: formatTime(now),
     openTime: config.market_hours.open,
     closeTime: config.market_hours.close,
     nextChange,
