@@ -121,10 +121,16 @@ export class ExecutionService {
 
       const stock = stockMap.get(pos.symbol);
       const entry = pos.avgEntryPrice;
-      const initialStop =
+      // Cap the stop at max_risk_pct to protect against adopting positions with
+      // absurdly wide Oracle stops (Oracle stops are designed for buy-zone entry,
+      // not wherever-we-actually-filled entry).
+      const maxRiskStop = entry * (1 - exec.max_risk_pct);
+      const oracleStop =
         stock?.stopPrice && stock.stopPrice > 0 && stock.stopPrice < entry
           ? stock.stopPrice
-          : entry * (1 - exec.max_risk_pct);
+          : null;
+      // Use the tighter (higher) of the two stops.
+      const initialStop = oracleStop !== null ? Math.max(oracleStop, maxRiskStop) : maxRiskStop;
       const target =
         stock?.sellZonePrice && stock.sellZonePrice > entry
           ? stock.sellZonePrice
@@ -146,7 +152,9 @@ export class ExecutionService {
         pendingSince: new Date(),
         rationale: [
           `Adopted orphaned Alpaca position (original strategy unknown)`,
-          `Stop derived from ${stock?.stopPrice ? 'Oracle watchlist stopPrice' : `${(exec.max_risk_pct * 100).toFixed(0)}% max risk default`}`,
+          oracleStop !== null && oracleStop > maxRiskStop
+            ? `Stop = Oracle watchlist stopPrice ${oracleStop.toFixed(3)} (tighter than ${(exec.max_risk_pct * 100).toFixed(0)}% max-risk stop ${maxRiskStop.toFixed(3)})`
+            : `Stop = ${(exec.max_risk_pct * 100).toFixed(0)}% max-risk cap ${maxRiskStop.toFixed(3)} (Oracle stop ${oracleStop?.toFixed(3) ?? 'n/a'} was too wide)`,
           `Target derived from ${stock?.sellZonePrice && stock.sellZonePrice > entry ? 'Oracle watchlist sellZonePrice' : '3R default'}`,
         ],
       });
@@ -325,9 +333,23 @@ export class ExecutionService {
 
   private async manageFilled(stocks: StockState[]): Promise<void> {
     const priceMap = new Map(stocks.map(s => [s.symbol, s.currentPrice]));
+    const exec = config.execution;
 
     for (const trade of [...this.activeTrades]) {
       if (trade.status !== 'filled') continue;
+
+      // Self-correct: clamp currentStop upward to the max-risk cap. This fixes
+      // trades that were adopted or entered before the cap was enforced.
+      const maxRiskStop = trade.entryPrice * (1 - exec.max_risk_pct);
+      if (trade.currentStop < maxRiskStop && trade.entryPrice > 0) {
+        const oldStop = trade.currentStop;
+        trade.currentStop = maxRiskStop;
+        trade.initialStop = Math.max(trade.initialStop, maxRiskStop);
+        trade.riskPerShare = trade.entryPrice - trade.initialStop;
+        console.log(
+          `Tightened stop on ${trade.symbol}: ${oldStop.toFixed(3)} -> ${maxRiskStop.toFixed(3)} (max-risk cap)`,
+        );
+      }
 
       const currentPrice = priceMap.get(trade.symbol);
       if (currentPrice === null || currentPrice === undefined) continue;
@@ -354,7 +376,6 @@ export class ExecutionService {
         ? (currentPrice - trade.entryPrice) / trade.riskPerShare
         : 0;
 
-      const exec = config.execution;
       if (rMultiple >= exec.trailing_start_r) {
         const newStop = currentPrice - exec.trailing_distance_r * trade.riskPerShare;
         trade.currentStop = Math.max(trade.currentStop, newStop);

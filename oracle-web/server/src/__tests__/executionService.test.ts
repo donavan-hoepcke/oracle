@@ -131,7 +131,8 @@ describe('ExecutionService', () => {
 
   describe('trailing stop', () => {
     it('moves stop to breakeven at 1R', async () => {
-      const candidates = [makeCandidate('AGAE', 0.50, 0.40, 0.94)];
+      // Risk=10% (entry 0.50, stop 0.45) to stay within the max_risk_pct clamp
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
       const stocks = [makeStockState('AGAE', 0.50)];
       await service.onPriceCycle(candidates, stocks);
 
@@ -139,8 +140,8 @@ describe('ExecutionService', () => {
       mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
       await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
 
-      // Price moves to 1R (0.50 + 0.10 = 0.60)
-      await service.onPriceCycle([], [makeStockState('AGAE', 0.60)]);
+      // Price moves to 1R (0.50 + 0.05 = 0.55)
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.55)]);
 
       const trade = service.getActiveTrades().find(t => t.symbol === 'AGAE');
       expect(trade?.currentStop).toBe(0.50);
@@ -148,33 +149,35 @@ describe('ExecutionService', () => {
     });
 
     it('trails at 1R behind after 2R', async () => {
-      const candidates = [makeCandidate('AGAE', 0.50, 0.40, 0.94)];
+      // Risk=10% (entry 0.50, stop 0.45) to stay within the max_risk_pct clamp
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
       const stocks = [makeStockState('AGAE', 0.50)];
       await service.onPriceCycle(candidates, stocks);
 
       mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
       await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
 
-      // Price at 2R (0.50 + 0.20 = 0.70)
-      await service.onPriceCycle([], [makeStockState('AGAE', 0.70)]);
+      // Price at 2R (0.50 + 0.10 = 0.60)
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.60)]);
 
       const trade = service.getActiveTrades().find(t => t.symbol === 'AGAE');
-      // currentStop = 0.70 - 1R(0.10) = 0.60
-      expect(trade?.currentStop).toBe(0.60);
+      // currentStop = 0.60 - 1R(0.05) = 0.55
+      expect(trade?.currentStop).toBeCloseTo(0.55, 3);
       expect(trade?.trailingState).toBe('trailing');
     });
   });
 
   describe('exit', () => {
     it('exits when price hits stop', async () => {
-      const candidates = [makeCandidate('AGAE', 0.50, 0.40, 0.94)];
+      // Risk=10% to stay within max_risk_pct clamp
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
       await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
 
       mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
       await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
 
-      // Price drops to stop
-      await service.onPriceCycle([], [makeStockState('AGAE', 0.39)]);
+      // Price drops below stop (0.45)
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.44)]);
 
       expect(mockOrderService.closePosition).toHaveBeenCalledWith('AGAE');
       expect(service.getActiveTrades()).toHaveLength(0);
