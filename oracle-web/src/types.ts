@@ -190,6 +190,7 @@ export interface ScannerRow {
     setup: CandidateSetup;
   } | null;
   cooldownExpiresAt: string | null;
+  washSaleRisk: boolean;
 }
 
 export interface ScannerSnapshot {

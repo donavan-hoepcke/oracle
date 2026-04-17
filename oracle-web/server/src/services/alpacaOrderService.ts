@@ -110,6 +110,18 @@ class AlpacaOrderService {
     return data.map((o: Record<string, unknown>) => this.mapOrder(o));
   }
 
+  /**
+   * List orders submitted on or after the given ISO timestamp. Used to derive
+   * the 30-day wash-sale watchlist without needing local persistence.
+   */
+  async getOrdersSince(sinceIso: string, status: 'all' | 'closed' | 'open' = 'closed'): Promise<AlpacaOrder[]> {
+    const qs = new URLSearchParams({ status, after: sinceIso, limit: '500', direction: 'desc' });
+    const res = await fetch(`${baseUrl()}/orders?${qs.toString()}`, { headers: headers() });
+    if (!res.ok) throw new Error(`Alpaca getOrdersSince error: ${res.status}`);
+    const data = await res.json();
+    return data.map((o: Record<string, unknown>) => this.mapOrder(o));
+  }
+
   async cancelOrder(orderId: string): Promise<void> {
     const res = await fetch(`${baseUrl()}/orders/${orderId}`, { method: 'DELETE', headers: headers() });
     if (!res.ok) throw new Error(`Alpaca cancel error: ${res.status}`);

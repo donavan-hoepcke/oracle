@@ -203,6 +203,7 @@ app.get('/api/scanner', async (_req, res) => {
     const rejections = executionService.getRejections();
     const cooldowns = executionService.getCooldownSymbols();
     const cooldownMap = new Map(cooldowns.map((c) => [c.symbol, c]));
+    const washSaleSet = new Set(executionService.getWashSaleSymbols());
     const rejectionMap = new Map(rejections.map((r) => [r.symbol, r]));
     const candidateMap = new Map(candidates.map((c) => [c.symbol, c]));
     const activeMap = new Map(activeTrades.map((t) => [t.symbol, t]));
@@ -287,6 +288,7 @@ app.get('/api/scanner', async (_req, res) => {
             }
           : null,
         cooldownExpiresAt: cooldownMap.get(stock.symbol)?.expiresAt ?? null,
+        washSaleRisk: washSaleSet.has(stock.symbol),
       };
     });
 

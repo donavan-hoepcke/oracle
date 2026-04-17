@@ -57,6 +57,10 @@ export class ExecutionService {
   // Symbol -> unix ms when cooldown expires. Populated on bad exits (stop,
   // trailing_stop, circuit_breaker) to prevent same-session re-entries.
   private cooldown: Map<string, number> = new Map();
+  // Symbols we have filled an order for in the last N days (per Alpaca).
+  // Used to require a higher bar for re-entry (wash-sale awareness).
+  private washSaleSymbols: Set<string> = new Set();
+  private washSaleRefreshedAt = 0;
   private startOfDayEquity: number | null = null;
   private enabled = config.execution.enabled;
 
@@ -87,6 +91,46 @@ export class ExecutionService {
     return true;
   }
 
+  getWashSaleSymbols(): string[] {
+    return Array.from(this.washSaleSymbols);
+  }
+
+  isWashSaleRisk(symbol: string): boolean {
+    return this.washSaleSymbols.has(symbol);
+  }
+
+  /**
+   * Refresh the wash-sale watchlist from Alpaca order history. Cached for
+   * WASH_SALE_REFRESH_MS to avoid pounding the API on every cycle.
+   */
+  private async refreshWashSaleSymbols(): Promise<void> {
+    const now = Date.now();
+    const WASH_SALE_REFRESH_MS = 60 * 1000; // 1 minute cache
+    if (now - this.washSaleRefreshedAt < WASH_SALE_REFRESH_MS) return;
+
+    const days = config.execution.wash_sale_lookback_days;
+    if (days <= 0) {
+      this.washSaleSymbols.clear();
+      this.washSaleRefreshedAt = now;
+      return;
+    }
+
+    const sinceIso = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+    try {
+      const orders = await alpacaOrderService.getOrdersSince(sinceIso, 'closed');
+      const next = new Set<string>();
+      for (const o of orders) {
+        if (o.filledAvgPrice !== null && o.filledQty !== null && o.symbol) {
+          next.add(o.symbol);
+        }
+      }
+      this.washSaleSymbols = next;
+      this.washSaleRefreshedAt = now;
+    } catch (err) {
+      console.error('Failed to refresh wash-sale symbols:', err);
+    }
+  }
+
   getActiveTrades(): ActiveTrade[] {
     return [...this.activeTrades];
   }
@@ -110,6 +154,7 @@ export class ExecutionService {
   async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[]): Promise<void> {
     if (!this.enabled) return;
 
+    await this.refreshWashSaleSymbols();
     await this.reconcileWithAlpaca(stocks);
 
     const account = await this.buildAccountState();
@@ -271,6 +316,16 @@ export class ExecutionService {
       if (candidate.suggestedEntry <= 0 || candidate.suggestedStop <= 0) {
         this.recordRejection(candidate, 'missing suggested entry/stop');
         continue;
+      }
+
+      // Higher bar for symbols traded in the last N days (wash-sale awareness).
+      // These trades get entered only if the setup is high-conviction.
+      if (this.isWashSaleRisk(candidate.symbol)) {
+        const wsFail = this.checkWashSaleBar(candidate);
+        if (wsFail) {
+          this.recordRejection(candidate, wsFail);
+          continue;
+        }
       }
 
       const filterResult = tradeFilterService.filterCandidate(candidate, account);
@@ -457,6 +512,37 @@ export class ExecutionService {
     }
 
     this.activeTrades = this.activeTrades.filter(t => t !== trade);
+  }
+
+  /**
+   * Returns null if the wash-sale-aware tighter bar is met, otherwise a
+   * human-readable reason string.
+   */
+  private checkWashSaleBar(candidate: TradeCandidate): string | null {
+    const exec = config.execution;
+    const entry = candidate.suggestedEntry;
+    const stop = candidate.suggestedStop;
+    const target = candidate.suggestedTarget;
+    const buyZone = candidate.snapshot.buyZonePrice;
+
+    if (candidate.score < exec.wash_sale_min_score) {
+      return `wash-sale risk: score ${candidate.score.toFixed(0)} < required ${exec.wash_sale_min_score}`;
+    }
+
+    const risk = entry - stop;
+    const reward = target - entry;
+    if (risk <= 0) return 'wash-sale risk: risk <= 0';
+    const rr = reward / risk;
+    if (rr < exec.wash_sale_min_rr) {
+      return `wash-sale risk: R:R ${rr.toFixed(1)} < required ${exec.wash_sale_min_rr.toFixed(1)}`;
+    }
+
+    if (exec.wash_sale_require_no_chase && buyZone && entry > buyZone) {
+      const chase = ((entry - buyZone) / buyZone) * 100;
+      return `wash-sale risk: chasing ${chase.toFixed(1)}% above buy zone (must be at or below)`;
+    }
+
+    return null;
   }
 
   private recordRejection(candidate: TradeCandidate, reason: string): void {

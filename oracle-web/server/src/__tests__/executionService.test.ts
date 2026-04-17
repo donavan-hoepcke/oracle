@@ -15,6 +15,10 @@ vi.mock('../config.js', () => ({
       momentum_max_chase_pct: 0.05,
       cooldown_after_stop_ms: 60 * 60 * 1000,
       require_uptrend_for_momentum: true,
+      wash_sale_lookback_days: 30,
+      wash_sale_min_score: 75,
+      wash_sale_min_rr: 3.0,
+      wash_sale_require_no_chase: true,
       trailing_breakeven_r: 1.0,
       trailing_start_r: 2.0,
       trailing_distance_r: 1.0,
@@ -28,6 +32,7 @@ const mockOrderService = vi.hoisted(() => ({
   getAccount: vi.fn(),
   getPositions: vi.fn(),
   getOpenOrders: vi.fn(),
+  getOrdersSince: vi.fn(),
   submitOrder: vi.fn(),
   getOrder: vi.fn(),
   cancelOrder: vi.fn(),
@@ -80,6 +85,7 @@ describe('ExecutionService', () => {
     mockOrderService.getAccount.mockResolvedValue({ cash: 10000, portfolioValue: 10000, buyingPower: 10000 });
     mockOrderService.getPositions.mockResolvedValue([]);
     mockOrderService.getOpenOrders.mockResolvedValue([]);
+    mockOrderService.getOrdersSince.mockResolvedValue([]);
     mockOrderService.submitOrder.mockResolvedValue({ id: 'order-1', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null });
     service = new ExecutionService();
   });
@@ -186,6 +192,71 @@ describe('ExecutionService', () => {
       expect(service.getActiveTrades()).toHaveLength(0);
       expect(service.getLedger()).toHaveLength(1);
       expect(service.getLedger()[0].exitReason).toBe('stop');
+    });
+  });
+
+  describe('wash-sale awareness', () => {
+    function makeFilledOrder(symbol: string) {
+      return { id: `o-${symbol}`, symbol, status: 'filled', filledAvgPrice: 1.0, filledQty: 100 };
+    }
+
+    it('blocks entry when score below wash_sale_min_score', async () => {
+      mockOrderService.getOrdersSince.mockResolvedValue([makeFilledOrder('AGAE')]);
+      const candidate = makeCandidate('AGAE', 0.50, 0.48, 2.00);
+      candidate.score = 60; // below 75 threshold
+      candidate.snapshot.buyZonePrice = 0.50;
+
+      await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
+      expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
+      const rej = service.getRejections().find((r) => r.symbol === 'AGAE');
+      expect(rej?.reason).toContain('wash-sale risk: score');
+    });
+
+    it('blocks entry when R:R below wash_sale_min_rr', async () => {
+      mockOrderService.getOrdersSince.mockResolvedValue([makeFilledOrder('AGAE')]);
+      // risk = 0.50 - 0.47 = 0.03; reward = 0.55 - 0.50 = 0.05; R:R ~ 1.67 (< 3.0)
+      const candidate = makeCandidate('AGAE', 0.50, 0.47, 0.55);
+      candidate.score = 80;
+      candidate.snapshot.buyZonePrice = 0.50;
+
+      await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
+      expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
+      const rej = service.getRejections().find((r) => r.symbol === 'AGAE');
+      expect(rej?.reason).toContain('wash-sale risk: R:R');
+    });
+
+    it('blocks entry when chasing above buy zone', async () => {
+      mockOrderService.getOrdersSince.mockResolvedValue([makeFilledOrder('AGAE')]);
+      // entry above buy zone
+      const candidate = makeCandidate('AGAE', 0.55, 0.50, 0.80);
+      candidate.score = 80;
+      candidate.snapshot.buyZonePrice = 0.50; // entry 0.55 is above
+
+      await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.55)]);
+      expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
+      const rej = service.getRejections().find((r) => r.symbol === 'AGAE');
+      expect(rej?.reason).toContain('chasing');
+    });
+
+    it('allows entry when all wash-sale bars are met', async () => {
+      mockOrderService.getOrdersSince.mockResolvedValue([makeFilledOrder('AGAE')]);
+      // high score, good R:R (= 5), entry at buy zone
+      const candidate = makeCandidate('AGAE', 0.50, 0.48, 0.60);
+      candidate.score = 80;
+      candidate.snapshot.buyZonePrice = 0.50;
+
+      await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
+      expect(mockOrderService.submitOrder).toHaveBeenCalled();
+    });
+
+    it('does not apply wash-sale bar to symbols not recently traded', async () => {
+      mockOrderService.getOrdersSince.mockResolvedValue([]); // no recent orders
+      const candidate = makeCandidate('AGAE', 0.50, 0.48, 0.55);
+      candidate.score = 50; // below wash_sale_min_score but not applicable
+      candidate.snapshot.buyZonePrice = 0.50;
+
+      await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
+      expect(mockOrderService.submitOrder).toHaveBeenCalled();
     });
   });
 
