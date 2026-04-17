@@ -183,6 +183,41 @@ describe('ExecutionService', () => {
     });
   });
 
+  describe('reconciliation', () => {
+    it('adopts an orphaned Alpaca position into activeTrades', async () => {
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'ORPHAN', qty: 500, avgEntryPrice: 2.00, currentPrice: 2.10, marketValue: 1050, unrealizedPl: 50 },
+      ]);
+
+      await service.onPriceCycle([], [makeStockState('ORPHAN', 2.10)]);
+
+      const active = service.getActiveTrades();
+      expect(active).toHaveLength(1);
+      const adopted = active[0];
+      expect(adopted.symbol).toBe('ORPHAN');
+      expect(adopted.entryPrice).toBe(2.00);
+      expect(adopted.status).toBe('filled');
+      // Default stop uses max_risk_pct (10%) when no watchlist stop available
+      expect(adopted.initialStop).toBeCloseTo(1.80, 3);
+      expect(adopted.shares).toBe(500);
+    });
+
+    it('does not re-adopt a position already in activeTrades', async () => {
+      mockOrderService.getPositions.mockResolvedValueOnce([]);
+      const candidates = [makeCandidate('AGAE', 0.50, 0.30, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+      expect(service.getActiveTrades()).toHaveLength(1);
+
+      // Now Alpaca reports the same symbol as a position
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'AGAE', qty: 100, avgEntryPrice: 0.50, currentPrice: 0.52, marketValue: 52, unrealizedPl: 2 },
+      ]);
+
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.52)]);
+      expect(service.getActiveTrades()).toHaveLength(1);
+    });
+  });
+
   describe('circuit breaker', () => {
     it('blocks new entries after exceeding daily drawdown', async () => {
       vi.mocked(tradeFilterService.filterCandidate).mockReturnValue({ passed: false, reason: 'drawdown exceeded' });
