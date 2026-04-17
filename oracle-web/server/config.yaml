@@ -28,17 +28,17 @@ bot:
     chrome_cdp_url: "http://127.0.0.1:9223"
     oracle_expected_columns:
       - "symbol"
-      - "stop"
-      - "long"
-      - "stock_data"
-      - "symbol_2"
       - "stop_loss"
       - "buy_zone"
       - "profit_delta"
       - "sell_zone"
       - "max"
       - "last"
-    oracle_schema_strict: true
+      - "chg"
+      - "volume"
+      - "float"
+      - "mk_cap"
+    oracle_schema_strict: false
 execution:
   enabled: true
   paper: true

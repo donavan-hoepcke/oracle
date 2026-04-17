@@ -216,28 +216,30 @@ class PlaywrightTickerSource {
           const normalizedFields = this.normalizeOracleFields(row.oracleFields);
           this.validateOracleSchema(normalizedFields);
 
-          const scannerPrice = this.pickMetric(normalizedFields, ['scanner_price', 'entry_price', 'symbol_2']);
-          const stockDataValue = this.pickMetric(normalizedFields, ['stock_data']);
-          const stopLossPct = this.pickMetric(normalizedFields, ['stop_loss']);
-          const stopPrice = this.pickMetric(normalizedFields, ['stop']);
-          const longPrice = this.pickMetric(normalizedFields, ['long', 'target']);
-          const buyZonePrice = this.pickMetric(normalizedFields, ['buy zone', 'buy_zone']);
-          const sellZonePrice = this.pickMetric(normalizedFields, ['sell zone', 'sell_zone', 'resistance']);
-          const profitDeltaPct = this.pickMetric(normalizedFields, ['profit delta', 'profit_delta']);
-          const maxVolume = this.pickMetric(normalizedFields, ['max volume', 'max_volume', 'max']);
-          const lastVolume = this.pickMetric(normalizedFields, ['last volume', 'last_volume', 'last']);
+          // Column mapping (detail header row from Oracle tool):
+          //   Symbol | Stop Loss | Buy Zone | Profit Delta | Sell Zone | Max | Last | % Chg | Volume | Float | Mk. Cap.
+          const stopPrice = this.pickMetric(normalizedFields, ['stop_loss', 'stop']);
+          const buyZonePrice = this.pickMetric(normalizedFields, ['buy_zone', 'buy zone']);
+          const sellZonePrice = this.pickMetric(normalizedFields, ['sell_zone', 'sell zone']);
+          const lastPrice = this.pickMetric(normalizedFields, ['last', 'last_price', 'last price', 'price', 'close']);
+          const profitDeltaPct = this.pickMetric(normalizedFields, ['profit_delta', 'profit delta']);
+          const maxVolume = this.pickMetric(normalizedFields, ['max_volume', 'max volume', 'max']);
+          const premarketVolume = this.pickMetric(normalizedFields, ['volume', 'premarket_volume', 'premarket volume']);
+          const floatMillions = this.pickMetric(normalizedFields, ['float', 'float_m', 'float m']);
+          const gapPercent = this.pickMetric(normalizedFields, ['chg', 'gap', 'gap_pct', 'pct_change']);
+
+          // Derived fields (not from Oracle columns directly)
+          const scannerPrice = lastPrice;
+          const stockDataValue: number | null = null;
+          const stopLossPct: number | null = null;
+          const lastVolume: number | null = null;
+          const longPrice = buyZonePrice;
+          const relativeVolume: number | null = null;
 
           const explicitTarget = this.parseNumericValue(row.rawTargetPrice);
           const explicitResistance = this.parseNumericValue(row.rawResistance);
-          const targetPrice = explicitTarget ?? longPrice ?? buyZonePrice ?? 0;
+          const targetPrice = explicitTarget ?? buyZonePrice ?? 0;
           const resistance = explicitResistance ?? sellZonePrice ?? null;
-
-          const lastPrice =
-            this.pickMetric(normalizedFields, ['last price', 'last_price', 'price', 'close']) ?? scannerPrice;
-          const premarketVolume = this.pickMetric(normalizedFields, ['premarket volume', 'premarket_volume', 'volume']);
-          const relativeVolume = this.pickMetric(normalizedFields, ['relative volume', 'relative_volume', 'rel vol', 'rvol']);
-          const floatMillions = this.pickMetric(normalizedFields, ['float', 'float m', 'float_m']);
-          const gapPercent = this.pickMetric(normalizedFields, ['gap', 'gap %', 'gap_pct']);
 
           deduped.set(row.symbol, {
             symbol: row.symbol,
@@ -297,8 +299,12 @@ class PlaywrightTickerSource {
         const rowsResult: ScrapedRow[] = [];
         for (const node of nodes) {
           const table = (node as Element).closest('table');
-          const headerNodes = table
-            ? Array.from(table.querySelectorAll('thead th')).map((th) => (th.textContent ?? '').trim())
+          // Oracle tables may have a grouped top header row plus a detail row.
+          // Only the last thead row matches the data columns 1:1.
+          const headerRows = table ? Array.from(table.querySelectorAll('thead tr')) : [];
+          const lastHeaderRow = headerRows.length > 0 ? headerRows[headerRows.length - 1] : null;
+          const headerNodes = lastHeaderRow
+            ? Array.from(lastHeaderRow.querySelectorAll('th, [role="columnheader"]')).map((th) => (th.textContent ?? '').trim())
             : [];
 
           const rowCells = Array.from((node as Element).querySelectorAll('td, th, [role="cell"], [role="gridcell"]'));
