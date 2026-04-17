@@ -191,6 +191,50 @@ app.get('/api/trades', (_req, res) => {
   });
 });
 
+app.get('/api/execution/journal', async (_req, res) => {
+  try {
+    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+    const [account, positions] = await Promise.all([
+      alpacaOrderService.getAccount(),
+      alpacaOrderService.getPositions(),
+    ]);
+    const deployedCapital = positions.reduce((sum, p) => sum + Math.abs(p.marketValue), 0);
+    const unrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPl, 0);
+    const dailyRealizedPnl = executionService.getDailyPnl();
+    const dailyTotalPnl = dailyRealizedPnl + unrealizedPnl;
+
+    res.json({
+      account: {
+        equity: account.portfolioValue,
+        cash: account.cash,
+        buyingPower: account.buyingPower,
+        deployedCapital,
+        unrealizedPnl,
+        dailyRealizedPnl,
+        dailyTotalPnl,
+      },
+      execution: {
+        enabled: executionService.isEnabled(),
+        paper: config.execution.paper,
+        openPositions: executionService.getActiveTrades().filter((t) => t.status === 'filled').length,
+        pendingOrders: executionService.getActiveTrades().filter((t) => t.status === 'pending').length,
+        maxPositions: config.execution.max_positions,
+      },
+      active: executionService.getActiveTrades().map((t) => {
+        const pos = positions.find((p) => p.symbol === t.symbol);
+        return {
+          ...t,
+          currentPrice: pos?.currentPrice ?? null,
+          unrealizedPl: pos?.unrealizedPl ?? null,
+        };
+      }),
+      closed: executionService.getLedger(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build journal' });
+  }
+});
+
 app.get('/api/execution/status', async (_req, res) => {
   try {
     const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
