@@ -32,6 +32,7 @@ export interface AlpacaPosition {
 
 export interface AlpacaOrder {
   id: string;
+  symbol: string;
   status: string;
   filledAvgPrice: number | null;
   filledQty: number | null;
@@ -102,6 +103,13 @@ class AlpacaOrderService {
     return this.mapOrder(data);
   }
 
+  async getOpenOrders(): Promise<AlpacaOrder[]> {
+    const res = await fetch(`${baseUrl()}/orders?status=open`, { headers: headers() });
+    if (!res.ok) throw new Error(`Alpaca getOpenOrders error: ${res.status}`);
+    const data = await res.json();
+    return data.map((o: Record<string, unknown>) => this.mapOrder(o));
+  }
+
   async cancelOrder(orderId: string): Promise<void> {
     const res = await fetch(`${baseUrl()}/orders/${orderId}`, { method: 'DELETE', headers: headers() });
     if (!res.ok) throw new Error(`Alpaca cancel error: ${res.status}`);
@@ -120,6 +128,7 @@ class AlpacaOrderService {
   private mapOrder(data: Record<string, unknown>): AlpacaOrder {
     return {
       id: data.id as string,
+      symbol: data.symbol as string,
       status: data.status as string,
       filledAvgPrice: data.filled_avg_price ? parseFloat(data.filled_avg_price as string) : null,
       filledQty: data.filled_qty ? parseFloat(data.filled_qty as string) : null,

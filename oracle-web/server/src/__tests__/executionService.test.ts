@@ -24,6 +24,7 @@ vi.mock('../config.js', () => ({
 const mockOrderService = vi.hoisted(() => ({
   getAccount: vi.fn(),
   getPositions: vi.fn(),
+  getOpenOrders: vi.fn(),
   submitOrder: vi.fn(),
   getOrder: vi.fn(),
   cancelOrder: vi.fn(),
@@ -75,7 +76,8 @@ describe('ExecutionService', () => {
     vi.clearAllMocks();
     mockOrderService.getAccount.mockResolvedValue({ cash: 10000, portfolioValue: 10000, buyingPower: 10000 });
     mockOrderService.getPositions.mockResolvedValue([]);
-    mockOrderService.submitOrder.mockResolvedValue({ id: 'order-1', status: 'accepted', filledAvgPrice: null, filledQty: null });
+    mockOrderService.getOpenOrders.mockResolvedValue([]);
+    mockOrderService.submitOrder.mockResolvedValue({ id: 'order-1', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null });
     service = new ExecutionService();
   });
 
@@ -97,6 +99,24 @@ describe('ExecutionService', () => {
       vi.mocked(tradeFilterService.filterCandidate).mockReturnValueOnce({ passed: false, reason: 'risk too high' });
       const candidates = [makeCandidate('HUBC', 0.226, 0.11, 0.37)];
       await service.onPriceCycle(candidates, [makeStockState('HUBC', 0.226)]);
+      expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
+    });
+
+    it('skips candidate if Alpaca already has a position in that symbol', async () => {
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'AGAE', qty: 100, avgEntryPrice: 0.5, currentPrice: 0.52, marketValue: 52, unrealizedPl: 2 },
+      ]);
+      const candidates = [makeCandidate('AGAE', 0.50, 0.30, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+      expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
+    });
+
+    it('skips candidate if Alpaca already has an open order for that symbol', async () => {
+      mockOrderService.getOpenOrders.mockResolvedValue([
+        { id: 'order-x', symbol: 'AGAE', status: 'new', filledAvgPrice: null, filledQty: null },
+      ]);
+      const candidates = [makeCandidate('AGAE', 0.50, 0.30, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
       expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
     });
 
