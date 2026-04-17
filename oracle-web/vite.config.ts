@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     globals: true,
-    exclude: ['**/node_modules/**', '.chrome-profile/**'],
+    exclude: ['**/node_modules/**', '.chrome-profile/**', '.chrome-debug-profile/**'],
   },
   server: {
     port: 5173,

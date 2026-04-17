@@ -9,7 +9,6 @@ import {
   scoreColor,
   setupLabel,
   robinhoodUrl,
-  ROBINHOOD_URL_BASE,
 } from '../utils/format';
 
 describe('formatPrice', () => {
