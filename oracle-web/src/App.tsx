@@ -28,23 +28,50 @@ function App() {
 
   const { hasPermission, requestPermission } = useNotifications(alerts, clearAlert);
 
-  const startBot = async () => {
+  const startScraper = async () => {
     try {
       const res = await fetch('/api/bot/start', { method: 'POST' });
-      if (!res.ok) console.error('Failed to start bot:', res.status);
+      if (!res.ok) console.error('Failed to start scraper:', res.status);
     } catch (err) {
-      console.error('Failed to start bot:', err);
+      console.error('Failed to start scraper:', err);
     }
   };
 
-  const stopBot = async () => {
+  const stopScraper = async () => {
     try {
       const res = await fetch('/api/bot/stop', { method: 'POST' });
-      if (!res.ok) console.error('Failed to stop bot:', res.status);
+      if (!res.ok) console.error('Failed to stop scraper:', res.status);
     } catch (err) {
-      console.error('Failed to stop bot:', err);
+      console.error('Failed to stop scraper:', err);
     }
   };
+
+  const toggleExecution = async (enabled: boolean) => {
+    try {
+      const res = await fetch('/api/execution/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) console.error('Failed to toggle execution:', res.status);
+      journalRefresh();
+    } catch (err) {
+      console.error('Failed to toggle execution:', err);
+    }
+  };
+
+  const flattenAll = async () => {
+    if (!confirm('Close ALL open positions immediately at market? This cannot be undone.')) return;
+    try {
+      const res = await fetch('/api/execution/flatten', { method: 'POST' });
+      if (!res.ok) console.error('Failed to flatten:', res.status);
+      journalRefresh();
+    } catch (err) {
+      console.error('Failed to flatten:', err);
+    }
+  };
+
+  const executionEnabled = journalSnapshot?.execution.enabled ?? false;
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
@@ -88,20 +115,75 @@ function App() {
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
         <PremarketSyncBanner marketStatus={marketStatus} botStatus={botStatus} stocks={stocks} />
 
-        <div className="bg-white rounded-lg shadow p-4 mb-4 flex flex-wrap items-center gap-3">
-          <button
-            onClick={startBot}
-            className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm"
-          >
-            Start Bot
-          </button>
+        <div className="bg-white rounded-lg shadow p-4 mb-4 flex flex-wrap items-center gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide mr-1">
+              Scraper
+            </span>
+            <button
+              onClick={startScraper}
+              title="Start the Playwright scraper that pulls today's Oracle picks into the watchlist"
+              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm"
+            >
+              Start
+            </button>
+            <button
+              onClick={stopScraper}
+              title="Stop the Oracle scraper. Existing watchlist stays loaded; no refresh."
+              className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-1.5 rounded text-sm"
+            >
+              Stop
+            </button>
+            <span
+              className={`text-xs px-2 py-0.5 rounded ${
+                botStatus?.isRunning ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-600'
+              }`}
+            >
+              {botStatus?.isRunning ? 'Running' : 'Stopped'}
+            </span>
+          </div>
 
-          <button
-            onClick={stopBot}
-            className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-1.5 rounded text-sm"
-          >
-            Stop Bot
-          </button>
+          <div className="h-6 w-px bg-gray-200" />
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide mr-1">
+              Execution
+            </span>
+            {executionEnabled ? (
+              <button
+                onClick={() => toggleExecution(false)}
+                title="Pause auto-trading. Existing positions keep their stops; no new trades are entered."
+                className="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-sm"
+              >
+                Pause Trading
+              </button>
+            ) : (
+              <button
+                onClick={() => toggleExecution(true)}
+                title="Resume auto-trading against the Alpaca paper account."
+                className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm"
+              >
+                Start Trading
+              </button>
+            )}
+            <button
+              onClick={flattenAll}
+              title="Emergency close: cancel all pending orders and market-sell every open position at Alpaca."
+              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm"
+            >
+              Flatten All
+            </button>
+            <span
+              className={`text-xs px-2 py-0.5 rounded ${
+                executionEnabled ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-600'
+              }`}
+            >
+              {executionEnabled ? 'Active' : 'Paused'}
+            </span>
+            {journalSnapshot?.execution.paper && (
+              <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800">PAPER</span>
+            )}
+          </div>
 
           {botStatus?.lastError && (
             <span className="text-xs text-red-600">{botStatus.lastError}</span>
