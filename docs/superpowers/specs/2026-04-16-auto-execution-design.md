@@ -1,5 +1,7 @@
 # Auto-Execution Engine — Design Spec
 
+> **Status:** Shipped. The sections below describe the original design. See "Extensions since the original spec" at the bottom for changes layered on after initial deployment (reconciliation, churn/chase prevention, wash-sale awareness).
+
 ## Context
 
 Today's retrospective analysis of 20 Oracle picks showed that our strategies (Oracle Zone, Red Candle Theory, Momentum Continuation) could have netted +19.3% combined across 27 simulated trades. However, the current system only alerts — it does not trade. The bot also lacks pre-entry filters, leading to bad trades like HUBC (51% stop width) and a losing Red Candle strategy (-10.1% net from 7 trades, 6 losses).
@@ -255,3 +257,16 @@ Using today's data as a benchmark:
 - Combined P&L should remain positive with fewer, higher-quality trades.
 - Circuit breaker should never trigger on a normal day (5% is generous).
 - Trailing stops should capture more profit from runners like AGAE (+18.9% EOD hold → should lock in gains along the way).
+
+## Extensions since the original spec
+
+Changes layered in after initial deployment, driven by issues observed during live paper trading:
+
+- **Reconciliation on every cycle** (`reconcileWithAlpaca`). Orphaned Alpaca positions (from a server restart, manual entry, or a missed fill callback) are adopted into `activeTrades` so they're managed by the trailing-stop logic rather than left unmanaged. Stops for adopted trades are clamped to `max_risk_pct`.
+- **Self-correcting stops** in `manageFilled`. If an active trade's stop is ever wider than `max_risk_pct` of the entry, it is tightened in-place. Defends against Oracle-provided stops that drift into high-risk territory intraday.
+- **Duplicate-order prevention**. `evaluateNewEntries` skips any symbol that already appears in Alpaca open orders or positions, not just the in-memory `activeTrades` map.
+- **Cooldown after stop / trailing-stop / circuit-breaker exits**. Re-entry for the symbol is blocked for `cooldown_after_stop_ms` (default 24h). Prevents buy→stop→buy→stop churn.
+- **Chase prevention** via `momentum_max_chase_pct`. A momentum candidate is rejected if current price is more than this percent above the buy zone. Also `require_uptrend_for_momentum` rejects momentum when 30m trend is flat or down.
+- **Wash-sale awareness**. Symbols traded in the last `wash_sale_lookback_days` (default 30) must clear a higher bar: score ≥ `wash_sale_min_score`, R:R ≥ `wash_sale_min_rr`, and (if `wash_sale_require_no_chase`) entry at-or-below buy zone. The scanner flags these with a `30d` badge. Queries Alpaca order history via `getOrdersSince` and refreshes the flagged set once per minute.
+- **Price-cycle reentry guard** (`fetchInFlight`). Prevents two overlapping polling cycles from adopting the same orphaned position twice.
+
