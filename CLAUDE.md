@@ -4,95 +4,112 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Python-based algorithmic stock trading scanner suite with three components:
-- **Oracle** (`oracle/`) - Real-time stock price monitor GUI (Tkinter)
-- **Premarket Scanners** (`premarket/scanners/`) - Premarket volume and ignition pattern scanners
-- **ORB Trader** (`orb_trader/`) - Placeholder for future ORB trading logic
+Algorithmic stock trading suite with two tracks:
 
-## Running the Applications
+- **`oracle-web/`** — TypeScript full-stack app that is the primary system today. Node/Express + WebSocket server paired with a React/Vite/Tailwind frontend. Includes a Playwright scraper for the StocksToTrade Oracle tool, a rule engine, and an auto-execution engine that paper-trades via the Alpaca Trading API.
+- **Python legacy** (`oracle/`, `premarket/scanners/`, `orb_trader/`) — original Tkinter monitor and CLI premarket scanners. Still runnable for reference but no longer actively developed.
 
-### Oracle (Price Monitor GUI)
+## Workflow Rule
+
+Everything must go through a feature branch + PR (`gh pr create`). Never commit directly to `main`. Use `gh pr merge N --squash --admin --delete-branch` after review, then `git checkout main && git pull` to sync.
+
+## Oracle Web (primary)
+
+### Running
+
 ```bash
-cd oracle
-pip install -r requirements.txt
-python stock_monitor.py
+# Backend (tsx watch on port 3001)
+cd oracle-web/server
+npm install
+npm run dev
+
+# Frontend (Vite on port 5173)
+cd oracle-web
+npm install
+npm run dev
 ```
 
-### Premarket Ignition Scanner
+Chrome must be running with the remote-debugging port open before the scraper can attach — see `docs/chrome-debug-setup.md`.
+
+### Tests / Typecheck
+
 ```bash
-cd premarket/scanners/premarket_ignition
-pip install -r requirements.txt
-
-# LIVE mode (Alpaca)
-python premarket_ignition.py --mode live --data-source alpaca --universe universe.txt --journal journal.csv
-
-# LIVE mode (Polygon)
-python premarket_ignition.py --mode live --data-source polygon --universe universe.txt --journal journal.csv
-
-# BACKTEST mode
-python premarket_ignition.py --mode backtest --start-date 2026-01-01 --end-date 2026-01-29 --universe universe.txt --journal backtest.csv
-
-# Parameter tuning
---vol-mult 6.0 --early-move-cap 0.15 --min-liq-vol 80000 --require-vwap 1
+cd oracle-web/server && npx vitest run           # server unit tests
+cd oracle-web/server && npx tsc --noEmit         # typecheck
+cd oracle-web       && npm test                  # frontend tests
+cd oracle-web       && npm run build             # build check
 ```
 
-### Simple Premarket Scanner
-```bash
-cd premarket/scanners/premarket
-pip install -r requirements.txt
-python premarket.py
+### Architecture
+
+```
+Chrome (debug port) -> Playwright scraper -> WatchlistItem
+                                              |
+                                              v
+                               PriceSocket (30s poll)
+                                              |
+              +-----------------+-------------+----------------+
+              v                 v                              v
+        RuleEngine      ExecutionService                 WebSocket
+       (candidates)   (trade lifecycle)             (clients / UI)
+                            |
+                            v
+                    AlpacaOrderService (paper)
 ```
 
-### Debug Utility
-```bash
-cd premarket/scanners/premarket_ignition
-python debug_ticker_data.py  # Tests API connectivity and data format
-```
+### Key Services (`oracle-web/server/src/services/`)
 
-## Architecture
+- `tickerBotService.ts` — Playwright scraper attached to Chrome via CDP. Reads the Oracle tool page and emits `WatchlistItem` records.
+- `ruleEngineService.ts` — Scores each symbol against Oracle Zone, Red Candle Theory, and Momentum Continuation setups. Enforces gap/momentum chase/uptrend filters. Exposes `suggestedEntry`, `suggestedStop`, `suggestedTarget` on each `TradeCandidate`.
+- `tradeFilterService.ts` — Pre-entry gates (daily drawdown, max positions, capital cap, max risk).
+- `executionService.ts` — Trade lifecycle orchestrator. Adopts existing Alpaca positions on startup, caps reconciled stops at `max_risk_pct`, manages trailing stops, applies cooldown after stop exits, enforces wash-sale bar, runs EOD flatten.
+- `alpacaOrderService.ts` — Alpaca Trading API wrapper (paper endpoint when `execution.paper: true`).
 
-### Data Flow Pattern
-All scanners follow: **Config/Universe → Data Source → Pattern Detection → Alert/Journal**
+### Frontend Pages (`oracle-web/src/components/`)
 
-### Key Abstractions (premarket_ignition.py)
-- `BarDataSource` (ABC) - Abstract interface for market data providers
-- `AlpacaDataSource` / `PolygonDataSource` - Concrete implementations
-- `ScanParams` - Frozen dataclass with algorithm parameters
-- `AlertState` - Per-symbol tracking for active alerts
-- `PremarketIgnitionScanner` - Main orchestrator
+- `ScannerPage.tsx` — Actionable scanner with status filter pills (TRADED / REJECTED / CANDIDATE / SETUP / BLOWN OUT / WATCH / DEAD), per-row `ZoneBar`, and a `30d` amber badge for wash-sale-flagged symbols.
+- `JournalPage.tsx` — Live trading journal with account summary card and active/closed trade tables including rationale.
+- `IdeasPage.tsx` — Candidate list with scoring breakdown and message context.
 
-### Oracle Components (stock_monitor.py)
-- Dual data sources: Finnhub (primary real-time) and yfinance (fallback)
-- `SoundPlayer` - Thread-safe audio alert queue
-- Market hours awareness via `zoneinfo` (US/Eastern)
+### API Endpoints (`oracle-web/server/src/index.ts`)
+
+- `GET /api/scanner` — Full scanner snapshot (all symbols, all statuses, zone prices, wash-sale flag).
+- `GET /api/trades` — Active + closed trades with rationale.
+- `GET /api/execution/status` — Engine state (enabled, paper, positions, deployed capital, daily P&L).
+- `POST /api/execution/toggle` — Enable/disable execution without restart.
+- `POST /api/execution/flatten` — Emergency flatten of all positions.
+- `GET /api/trade-candidates` — Current ranked candidates.
 
 ## Configuration
 
-### Environment Variables (.env)
+### Environment (`oracle-web/server/.env`)
+
 ```bash
 APCA_API_KEY_ID=...        # Alpaca API key
-APCA_API_SECRET_KEY=...    # Alpaca secret
+APCA_API_SECRET_KEY=...    # Alpaca secret (paper account)
 APCA_DATA_FEED=iex         # 'iex' (free) or 'sip' (paid)
-POLYGON_API_KEY=...        # Optional Polygon.io key
-WEBHOOK_URL=...            # Optional Discord webhook
 ```
 
-### Oracle Config (config.yaml)
-- `provider`: "finnhub" or "yfinance"
-- `finnhub_api_key`: API key for real-time quotes
-- `check_interval`: Polling interval in seconds (default 30)
-- `alert_threshold`: Price proximity trigger (default 0.03 = 3%)
+### Server Config (`oracle-web/server/config.yaml`)
 
-### Watchlists
-- `tickers.txt` / `universe.txt`: One symbol per line, or `SYMBOL,TARGET_PRICE` format for Oracle
+- `bot.playwright.chrome_cdp_url` — must match the `--remote-debugging-port` used when launching Chrome (9223 by default).
+- `execution.*` — risk caps, position limits, wash-sale thresholds, trailing stop R-multiples, EOD flatten time. See `docs/superpowers/specs/2026-04-16-auto-execution-design.md` for semantics.
 
-## Key Patterns
+## Operational Runbook
 
-- **Append-only CSV journaling**: Events logged to `*_journal.csv` files
-- **Incremental VWAP**: Computed bar-by-bar via `compute_intraday_vwap()`
-- **Outcome tracking**: Multi-horizon exit evaluation at 10/20/30 min post-alert
-- **Backtesting as testing**: No unit test suite; backtest mode validates logic against historical data
+1. Launch Chrome with the isolated debug profile (`docs/chrome-debug-setup.md`).
+2. Log into the StocksToTrade Oracle tool in that Chrome window (first run only — session persists).
+3. Start the server (`cd oracle-web/server && npm run dev`) and frontend (`cd oracle-web && npm run dev`).
+4. Scraper auto-attaches via CDP; WebSocket streams price + trade updates to the UI.
+5. Flip execution on via the toolbar toggle or `POST /api/execution/toggle`.
 
-## Python Version
+## Python Legacy
 
-Requires Python 3.13+ (uses `zoneinfo`, modern type syntax like `X | None`)
+Still runnable but not actively maintained. Kept for reference and for the backtesting CSV format in the premarket ignition scanner.
+
+```bash
+cd oracle && python stock_monitor.py
+cd premarket/scanners/premarket_ignition && python premarket_ignition.py --mode live --data-source alpaca --universe universe.txt --journal journal.csv
+```
+
+Requires Python 3.13+ (uses `zoneinfo`, `X | None` syntax).
