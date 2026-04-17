@@ -39,6 +39,20 @@ bot:
       - "max"
       - "last"
     oracle_schema_strict: true
+execution:
+  enabled: true
+  paper: true
+  risk_per_trade: 100
+  max_positions: 8
+  max_capital_pct: 0.50
+  max_daily_drawdown_pct: 0.05
+  max_risk_pct: 0.10
+  red_candle_vol_mult: 1.5
+  momentum_gap_pct: 0.03
+  trailing_breakeven_r: 1.0
+  trailing_start_r: 2.0
+  trailing_distance_r: 1.0
+  eod_flatten_time: "15:50"
 market_hours:
   open: "09:30"
   close: "16:00"
