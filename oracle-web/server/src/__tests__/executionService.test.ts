@@ -56,7 +56,7 @@ function makeCandidate(symbol: string, entry: number, stop: number, target: numb
     oracleScore: 50,
     messageScore: 50,
     executionScore: 50,
-    messageContext: { symbol, mentionCount: 0, convictionScore: 0, tagCounts: {}, latestMessages: [] },
+    messageContext: { symbol, mentionCount: 0, convictionScore: 0, tagCounts: {}, latestMessages: [], lastMentionAt: null },
     snapshot: { currentPrice: entry, buyZonePrice: entry, stopPrice: stop, sellZonePrice: target, profitDeltaPct: null, trend30m: 'up' },
     suggestedEntry: entry,
     suggestedStop: stop,
