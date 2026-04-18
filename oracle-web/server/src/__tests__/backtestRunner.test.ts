@@ -238,6 +238,43 @@ describe('BacktestRunner', () => {
     expect(result.tradingDay).toBe('2026-04-17');
   });
 
+  it('scales risk per trade with starting cash so position sizes stay proportional', () => {
+    const day = [
+      makeCycle(
+        '09:30',
+        [makeItem('AAA', 1.0, { stopPrice: 0.95, sellZonePrice: 1.2 })],
+        [makeCandidate('AAA')],
+      ),
+      makeCycle('09:31', [makeItem('AAA', 1.25, { stopPrice: 0.95, sellZonePrice: 1.2 })]),
+    ];
+    const small = new BacktestRunner().runCycles(day, { startingCash: 1_000 });
+    const large = new BacktestRunner().runCycles(day, { startingCash: 100_000 });
+    // Both accounts should take the same trade (default risk = 1% of cash).
+    expect(small.trades).toHaveLength(1);
+    expect(large.trades).toHaveLength(1);
+    // Large-account size should be ~100× small-account size (same risk fraction).
+    const ratio = large.trades[0].shares / small.trades[0].shares;
+    expect(ratio).toBeGreaterThan(50);
+    expect(ratio).toBeLessThan(150);
+  });
+
+  it('honors an explicit riskPerTrade override', () => {
+    const day = [
+      makeCycle(
+        '09:30',
+        [makeItem('AAA', 1.0, { stopPrice: 0.9, sellZonePrice: 1.2 })],
+        [makeCandidate('AAA')],
+      ),
+      makeCycle('09:31', [makeItem('AAA', 1.25, { stopPrice: 0.9, sellZonePrice: 1.2 })]),
+    ];
+    const result = new BacktestRunner().runCycles(day, {
+      startingCash: 10_000,
+      riskPerTrade: 50,
+    });
+    // $50 risk / $0.10 per-share risk = 500 shares.
+    expect(result.trades[0].shares).toBe(500);
+  });
+
   it('skips candidates that exceed the max_positions cap', () => {
     const items = ['AAA', 'BBB', 'CCC'].map((s) =>
       makeItem(s, 1.0, { stopPrice: 0.95, sellZonePrice: 1.2 }),

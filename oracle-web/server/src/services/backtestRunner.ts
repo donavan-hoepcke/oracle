@@ -55,7 +55,10 @@ export interface BacktestResult {
 
 export interface BacktestOptions {
   startingCash?: number;
+  riskPerTrade?: number;
 }
+
+const DEFAULT_RISK_PCT = 0.01;
 
 function closeTrade(
   trade: BacktestTrade,
@@ -88,6 +91,7 @@ export class BacktestRunner {
   runCycles(cycles: CycleRecord[], opts: BacktestOptions = {}): BacktestResult {
     const exec = config.execution;
     const startingCash = opts.startingCash ?? 10000;
+    const riskPerTrade = opts.riskPerTrade ?? startingCash * DEFAULT_RISK_PCT;
 
     let cash = startingCash;
     let realizedPnl = 0;
@@ -125,6 +129,7 @@ export class BacktestRunner {
         cooldownUntilMs,
         tradedSymbols,
         startingCash,
+        riskPerTrade,
         realizedPnl,
         cash,
         (cost) => {
@@ -248,6 +253,7 @@ export class BacktestRunner {
     cooldownUntilMs: Map<string, number>,
     tradedSymbols: Set<string>,
     startingCash: number,
+    riskPerTrade: number,
     realizedPnl: number,
     cash: number,
     onSpend: (cost: number) => void,
@@ -326,7 +332,7 @@ export class BacktestRunner {
       }
 
       const riskPerShare = entry - stop;
-      const shares = Math.floor(exec.risk_per_trade / riskPerShare);
+      const shares = Math.floor(riskPerTrade / riskPerShare);
       if (shares < 1) continue;
       const cost = shares * entry;
       const maxDeploy = startingCash * exec.max_capital_pct - deployed;

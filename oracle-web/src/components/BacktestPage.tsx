@@ -221,17 +221,72 @@ function Results({ result }: ResultsProps) {
   );
 }
 
+function todayEt(): string {
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const y = et.getFullYear();
+  const m = String(et.getMonth() + 1).padStart(2, '0');
+  const d = String(et.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 export function BacktestPage() {
-  const { days, result, isRunning, error, runBacktest } = useBacktest();
+  const {
+    days,
+    result,
+    isRunning,
+    error,
+    runBacktest,
+    synthDay,
+    isSynthing,
+    synthError,
+    lastSynth,
+  } = useBacktest();
   const [selectedDay, setSelectedDay] = useState<string>('');
   const [startingCash, setStartingCash] = useState<string>('10000');
+  const [riskPerTrade, setRiskPerTrade] = useState<string>('100');
+  const [riskLinked, setRiskLinked] = useState<boolean>(true);
+  const [synthTargetDay, setSynthTargetDay] = useState<string>(todayEt());
+  const [synthTickers, setSynthTickers] = useState<string>('');
+  const [synthSeed, setSynthSeed] = useState<string>('42');
 
   const effectiveDay = selectedDay || days[0] || '';
+
+  const handleCashChange = (next: string) => {
+    setStartingCash(next);
+    if (riskLinked) {
+      const cashNum = Number(next);
+      if (Number.isFinite(cashNum) && cashNum > 0) {
+        setRiskPerTrade((cashNum * 0.01).toFixed(2));
+      }
+    }
+  };
 
   const handleRun = () => {
     if (!effectiveDay) return;
     const cash = Number(startingCash);
-    runBacktest(effectiveDay, Number.isFinite(cash) && cash > 0 ? cash : undefined);
+    const risk = Number(riskPerTrade);
+    runBacktest(
+      effectiveDay,
+      Number.isFinite(cash) && cash > 0 ? cash : undefined,
+      Number.isFinite(risk) && risk > 0 ? risk : undefined,
+    );
+  };
+
+  const handleSynth = async () => {
+    const tickerList = synthTickers
+      .split(',')
+      .map((t) => t.trim().toUpperCase())
+      .filter(Boolean);
+    const seedNum = Number(synthSeed);
+    const synthed = await synthDay(
+      synthTargetDay,
+      tickerList.length > 0 ? tickerList : undefined,
+      Number.isFinite(seedNum) ? seedNum : undefined,
+    );
+    if (synthed) {
+      setSelectedDay(synthed.day);
+    }
   };
 
   return (
@@ -262,11 +317,49 @@ export function BacktestPage() {
             <input
               type="number"
               value={startingCash}
-              onChange={(e) => setStartingCash(e.target.value)}
+              onChange={(e) => handleCashChange(e.target.value)}
               className="border border-gray-300 rounded px-2 py-1.5 text-sm w-32 tabular-nums"
               min={100}
               step={100}
             />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 uppercase tracking-wide mb-1">
+              Risk / trade ($)
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={riskPerTrade}
+                onChange={(e) => {
+                  setRiskPerTrade(e.target.value);
+                  setRiskLinked(false);
+                }}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-28 tabular-nums"
+                min={1}
+                step={10}
+              />
+              <label
+                className="text-xs text-gray-500 flex items-center gap-1 cursor-pointer"
+                title="Keep risk at 1% of starting cash so results are comparable across account sizes"
+              >
+                <input
+                  type="checkbox"
+                  checked={riskLinked}
+                  onChange={(e) => {
+                    const linked = e.target.checked;
+                    setRiskLinked(linked);
+                    if (linked) {
+                      const cashNum = Number(startingCash);
+                      if (Number.isFinite(cashNum) && cashNum > 0) {
+                        setRiskPerTrade((cashNum * 0.01).toFixed(2));
+                      }
+                    }
+                  }}
+                />
+                1% of cash
+              </label>
+            </div>
           </div>
           <button
             onClick={handleRun}
@@ -279,10 +372,66 @@ export function BacktestPage() {
         </div>
         {days.length === 0 && (
           <div className="mt-2 text-xs text-gray-500">
-            No recordings found. Run the server during market hours to capture cycles.
+            No recordings found. Run the server during market hours to capture cycles, or synthesize
+            a day below.
           </div>
         )}
       </div>
+
+      <details className="bg-white rounded-lg shadow">
+        <summary className="p-4 cursor-pointer text-sm font-semibold text-gray-700 hover:bg-gray-50">
+          Synthesize a day <span className="text-gray-500 font-normal">(for testing or backfilling missed days)</span>
+        </summary>
+        <div className="px-4 pb-4 border-t border-gray-200 pt-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs text-gray-500 uppercase tracking-wide mb-1">Day</label>
+              <input
+                type="date"
+                value={synthTargetDay}
+                onChange={(e) => setSynthTargetDay(e.target.value)}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+            <div className="flex-1 min-w-[240px]">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide mb-1">
+                Tickers (comma-separated, blank for defaults)
+              </label>
+              <input
+                type="text"
+                value={synthTickers}
+                onChange={(e) => setSynthTickers(e.target.value)}
+                placeholder="AGAE, MULN, HUBC"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 uppercase tracking-wide mb-1">Seed</label>
+              <input
+                type="number"
+                value={synthSeed}
+                onChange={(e) => setSynthSeed(e.target.value)}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-24 tabular-nums"
+              />
+            </div>
+            <button
+              onClick={handleSynth}
+              disabled={isSynthing}
+              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white px-4 py-1.5 rounded text-sm"
+            >
+              {isSynthing ? 'Generating...' : 'Generate'}
+            </button>
+          </div>
+          {synthError && <div className="mt-2 text-sm text-red-600">{synthError}</div>}
+          {lastSynth && !synthError && (
+            <div className="mt-2 text-xs text-gray-600">
+              Wrote {lastSynth.cyclesWritten} cycles for {lastSynth.tickers.length} tickers to{' '}
+              <span className="font-mono">{lastSynth.filePath}</span>. Planned outcomes:{' '}
+              {lastSynth.outcomes.win}W / {lastSynth.outcomes.loss}L / {lastSynth.outcomes.chop} chop.
+            </div>
+          )}
+        </div>
+      </details>
 
       {result && <Results result={result} />}
     </div>

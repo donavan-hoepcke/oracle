@@ -11,6 +11,7 @@ import { messageService } from './services/messageService.js';
 import { ruleEngineService } from './services/ruleEngineService.js';
 import { executionService } from './services/executionService.js';
 import { backtestRunner } from './services/backtestRunner.js';
+import { synthesizeDay } from './services/recordingSynthService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -395,6 +396,7 @@ app.get('/api/backtest/days', (_req, res) => {
 const backtestRunSchema = z.object({
   tradingDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   startingCash: z.number().positive().max(10_000_000).optional(),
+  riskPerTrade: z.number().positive().max(1_000_000).optional(),
 });
 
 app.post('/api/backtest/run', botRateLimit, (req, res) => {
@@ -403,17 +405,37 @@ app.post('/api/backtest/run', botRateLimit, (req, res) => {
     res.status(400).json({ error: 'Invalid request body', details: parsed.error.issues });
     return;
   }
-  const { tradingDay, startingCash } = parsed.data;
+  const { tradingDay, startingCash, riskPerTrade } = parsed.data;
   const filePath = resolve(config.recording.dir, `${tradingDay}.jsonl`);
   if (!existsSync(filePath)) {
     res.status(404).json({ error: `No recording for ${tradingDay}` });
     return;
   }
   try {
-    const result = backtestRunner.runDay(filePath, { startingCash });
+    const result = backtestRunner.runDay(filePath, { startingCash, riskPerTrade });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Backtest failed' });
+  }
+});
+
+const backtestSynthSchema = z.object({
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  tickers: z.array(z.string().min(1).max(10)).max(50).optional(),
+  seed: z.number().int().optional(),
+});
+
+app.post('/api/backtest/synth', botRateLimit, (req, res) => {
+  const parsed = backtestSynthSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid request body', details: parsed.error.issues });
+    return;
+  }
+  try {
+    const result = synthesizeDay(parsed.data);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Synth failed' });
   }
 });
 
