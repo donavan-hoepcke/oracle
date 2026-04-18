@@ -9,7 +9,7 @@ export type CandidateSetup =
   | 'pullback_reclaim'
   | 'crowded_extension_watch';
 
-interface RedCandleSignal {
+export interface RedCandleSignal {
   matched: boolean;
   candleHigh: number | null;
   candleLow: number | null;
@@ -17,6 +17,28 @@ interface RedCandleSignal {
   stop: number | null;
   rrToSellZone: number | null;
   details: string[];
+}
+
+export function emptyRedCandleSignal(): RedCandleSignal {
+  return {
+    matched: false,
+    candleHigh: null,
+    candleLow: null,
+    entry: null,
+    stop: null,
+    rrToSellZone: null,
+    details: [],
+  };
+}
+
+export function emptyMessageContext(symbol: string): SymbolMessageContext {
+  return {
+    symbol,
+    mentionCount: 0,
+    lastMentionAt: null,
+    tagCounts: {},
+    convictionScore: 0,
+  };
 }
 
 export interface TradeCandidate {
@@ -58,6 +80,20 @@ class RuleEngineService {
 
   private async evaluateStock(stock: StockState, messageContext: SymbolMessageContext): Promise<TradeCandidate | null> {
     const redCandleSignal = await this.detectRedCandleTheory(stock);
+    return this.scoreFromInputs(stock, messageContext, redCandleSignal);
+  }
+
+  /**
+   * Pure scoring path. Takes pre-resolved inputs (message context + red-candle
+   * signal) and returns the candidate without touching any I/O — exposed so
+   * offline tooling (historical replay, unit tests) can feed synthesized inputs
+   * through the same scoring logic the live bot uses.
+   */
+  scoreFromInputs(
+    stock: StockState,
+    messageContext: SymbolMessageContext,
+    redCandleSignal: RedCandleSignal,
+  ): TradeCandidate | null {
     const oracleScore = this.scoreOracle(stock);
     const messageScore = Math.min(100, messageContext.convictionScore);
     const executionScore = this.scoreExecution(stock, redCandleSignal);
