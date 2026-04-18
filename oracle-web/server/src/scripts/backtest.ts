@@ -19,11 +19,18 @@ function main(): void {
   }
 
   let startingCash: number | undefined;
+  let riskPerTrade: number | undefined;
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--starting-cash' && args[i + 1]) {
       startingCash = Number(args[i + 1]);
       if (!Number.isFinite(startingCash) || startingCash <= 0) {
         fail(`Invalid --starting-cash: ${args[i + 1]}`);
+      }
+      i++;
+    } else if (args[i] === '--risk-per-trade' && args[i + 1]) {
+      riskPerTrade = Number(args[i + 1]);
+      if (!Number.isFinite(riskPerTrade) || riskPerTrade <= 0) {
+        fail(`Invalid --risk-per-trade: ${args[i + 1]}`);
       }
       i++;
     }
@@ -34,7 +41,7 @@ function main(): void {
     fail(`Recording not found: ${filePath}`);
   }
 
-  const result = backtestRunner.runDay(filePath, { startingCash });
+  const result = backtestRunner.runDay(filePath, { startingCash, riskPerTrade });
   console.log(JSON.stringify(result, null, 2));
   const s = result.summary;
   console.error(

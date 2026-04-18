@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { z } from 'zod';
 import { config } from './config.js';
 import { priceSocketServer, StockState } from './websocket/priceSocket.js';
@@ -10,6 +10,8 @@ import { getMarketStatus } from './services/marketHoursService.js';
 import { messageService } from './services/messageService.js';
 import { ruleEngineService } from './services/ruleEngineService.js';
 import { executionService } from './services/executionService.js';
+import { backtestRunner } from './services/backtestRunner.js';
+import { synthesizeDay } from './services/recordingSynthService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -372,6 +374,69 @@ app.post('/api/execution/toggle', botRateLimit, (req, res) => {
   }
   executionService.setEnabled(enabled);
   res.json({ enabled: executionService.isEnabled() });
+});
+
+app.get('/api/backtest/days', (_req, res) => {
+  try {
+    if (!existsSync(config.recording.dir)) {
+      res.json({ days: [] });
+      return;
+    }
+    const files = readdirSync(config.recording.dir);
+    const days = files
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+      .map((f) => f.replace(/\.jsonl$/, ''))
+      .sort((a, b) => b.localeCompare(a));
+    res.json({ days });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list recordings' });
+  }
+});
+
+const backtestRunSchema = z.object({
+  tradingDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  startingCash: z.number().positive().max(10_000_000).optional(),
+  riskPerTrade: z.number().positive().max(1_000_000).optional(),
+});
+
+app.post('/api/backtest/run', botRateLimit, (req, res) => {
+  const parsed = backtestRunSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid request body', details: parsed.error.issues });
+    return;
+  }
+  const { tradingDay, startingCash, riskPerTrade } = parsed.data;
+  const filePath = resolve(config.recording.dir, `${tradingDay}.jsonl`);
+  if (!existsSync(filePath)) {
+    res.status(404).json({ error: `No recording for ${tradingDay}` });
+    return;
+  }
+  try {
+    const result = backtestRunner.runDay(filePath, { startingCash, riskPerTrade });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Backtest failed' });
+  }
+});
+
+const backtestSynthSchema = z.object({
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  tickers: z.array(z.string().min(1).max(10)).max(50).optional(),
+  seed: z.number().int().optional(),
+});
+
+app.post('/api/backtest/synth', botRateLimit, (req, res) => {
+  const parsed = backtestSynthSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid request body', details: parsed.error.issues });
+    return;
+  }
+  try {
+    const result = synthesizeDay(parsed.data);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Synth failed' });
+  }
 });
 
 app.post('/api/execution/flatten', botRateLimit, async (_req, res) => {
