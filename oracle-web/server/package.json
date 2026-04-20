@@ -10,7 +10,8 @@
     "test:watch": "vitest",
     "backtest": "tsx src/scripts/backtest.ts",
     "synth-recording": "tsx src/scripts/synthRecording.ts",
-    "historical-replay": "tsx src/scripts/historicalReplay.ts"
+    "historical-replay": "tsx src/scripts/historicalReplay.ts",
+    "compare-feeds": "tsx src/scripts/compareFeeds.ts"
   },
   "dependencies": {
     "date-fns-tz": "^3.1.3",
