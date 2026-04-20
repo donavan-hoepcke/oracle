@@ -136,6 +136,15 @@ describe('ExecutionService', () => {
       await service.onPriceCycle(candidates, stocks);
       expect(mockOrderService.submitOrder).toHaveBeenCalledTimes(1);
     });
+
+    it('does not place new entries while paused', async () => {
+      service.setEnabled(false);
+
+      await service.onPriceCycle([makeCandidate('AGAE', 0.50, 0.45, 0.94)], [makeStockState('AGAE', 0.50)]);
+
+      expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
+      expect(service.getActiveTrades()).toHaveLength(0);
+    });
   });
 
   describe('trailing stop', () => {
@@ -186,6 +195,22 @@ describe('ExecutionService', () => {
       await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
 
       // Price drops below stop (0.45)
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.44)]);
+
+      expect(mockOrderService.closePosition).toHaveBeenCalledWith('AGAE');
+      expect(service.getActiveTrades()).toHaveLength(0);
+      expect(service.getLedger()).toHaveLength(1);
+      expect(service.getLedger()[0].exitReason).toBe('stop');
+    });
+
+    it('continues managing an open position while paused', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      service.setEnabled(false);
       await service.onPriceCycle([], [makeStockState('AGAE', 0.44)]);
 
       expect(mockOrderService.closePosition).toHaveBeenCalledWith('AGAE');
