@@ -32,6 +32,12 @@ export interface RecordedDecision {
   score: number;
   rationale: string[];
   rejectionReason?: string;
+  // Rule-engine-derived levels for the candidate. Populated for `kind:
+  // 'candidate'` so the backtest can replay with the same entry/stop/target
+  // the live engine would have used (vs. the wider Oracle watchlist stop).
+  suggestedEntry?: number;
+  suggestedStop?: number;
+  suggestedTarget?: number;
 }
 
 export interface CycleRecord {
@@ -88,6 +94,9 @@ function toDecisions(candidates: TradeCandidate[], rejections: FilterRejection[]
       setup: c.setup,
       score: c.score,
       rationale: c.rationale,
+      suggestedEntry: c.suggestedEntry,
+      suggestedStop: c.suggestedStop,
+      suggestedTarget: c.suggestedTarget,
     });
   }
   for (const r of rejections) {

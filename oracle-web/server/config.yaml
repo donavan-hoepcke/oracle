@@ -50,7 +50,7 @@ execution:
   red_candle_vol_mult: 1.5
   momentum_gap_pct: 0.03
   momentum_max_chase_pct: 0.05
-  cooldown_after_stop_ms: 86400000  # 24h — rest of the session
+  cooldown_after_stop_ms: 10800000  # 3h — long enough to avoid same-setup churn, short enough to retake clean re-setups later in the session
   require_uptrend_for_momentum: true
   wash_sale_lookback_days: 30
   wash_sale_min_score: 75

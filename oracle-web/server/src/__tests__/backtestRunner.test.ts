@@ -275,6 +275,39 @@ describe('BacktestRunner', () => {
     expect(result.trades[0].shares).toBe(500);
   });
 
+  it('prefers decision-level suggested entry/stop/target over Oracle watchlist levels', () => {
+    // Oracle watchlist levels are wide (stop 0.80 → risk 20% > max_risk_pct).
+    // Rule-engine-derived levels are tight (stop 0.95 → risk 5%).
+    // With decision levels present the trade should take; without them, reject.
+    const tightDecision: RecordedDecision = {
+      symbol: 'AAA',
+      kind: 'candidate',
+      setup: 'red_candle_theory',
+      score: 80,
+      rationale: ['tight rule-engine stop'],
+      suggestedEntry: 1.0,
+      suggestedStop: 0.95,
+      suggestedTarget: 1.2,
+    };
+    const cycles = [
+      makeCycle(
+        '09:30',
+        [makeItem('AAA', 1.0, { stopPrice: 0.80, sellZonePrice: 1.5 })],
+        [tightDecision],
+      ),
+      makeCycle('09:31', [makeItem('AAA', 1.25, { stopPrice: 0.80, sellZonePrice: 1.5 })]),
+    ];
+    const result = runner.runCycles(cycles, { startingCash: 10000 });
+    expect(result.trades).toHaveLength(1);
+    const trade = result.trades[0];
+    expect(trade.entryPrice).toBe(1.0);
+    expect(trade.initialStop).toBe(0.95);
+    expect(trade.target).toBe(1.2);
+    // Hits the decision target (1.2), not the Oracle target (1.5).
+    expect(trade.exitReason).toBe('target');
+    expect(trade.exitPrice).toBe(1.25);
+  });
+
   it('skips candidates that exceed the max_positions cap', () => {
     const items = ['AAA', 'BBB', 'CCC'].map((s) =>
       makeItem(s, 1.0, { stopPrice: 0.95, sellZonePrice: 1.2 }),

@@ -338,6 +338,26 @@ describe('ExecutionService', () => {
       expect(adopted.shares).toBe(500);
     });
 
+    it('does not re-adopt a position during the post-flatten grace window', async () => {
+      // First: adopt an orphaned position.
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'ORPHAN', qty: 500, avgEntryPrice: 2.00, currentPrice: 2.10, marketValue: 1050, unrealizedPl: 50 },
+      ]);
+      await service.onPriceCycle([], [makeStockState('ORPHAN', 2.10)]);
+      expect(service.getActiveTrades()).toHaveLength(1);
+
+      // Flatten — Alpaca close is async, so the position is still reported.
+      await service.flattenAll();
+      expect(service.getActiveTrades()).toHaveLength(0);
+
+      // Next cycle still sees the position at Alpaca — must NOT re-adopt.
+      await service.onPriceCycle([], [makeStockState('ORPHAN', 2.10)]);
+      expect(service.getActiveTrades()).toHaveLength(0);
+      // Ledger should still have the single EOD entry from flattenAll, not a second.
+      expect(service.getLedger()).toHaveLength(1);
+      expect(service.getLedger()[0].exitReason).toBe('eod');
+    });
+
     it('does not re-adopt a position already in activeTrades', async () => {
       mockOrderService.getPositions.mockResolvedValueOnce([]);
       const candidates = [makeCandidate('AGAE', 0.50, 0.30, 0.94)];

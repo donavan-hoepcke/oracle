@@ -266,6 +266,9 @@ async function main(): Promise<void> {
           setup: candidate.setup,
           score: candidate.score,
           rationale: candidate.rationale,
+          suggestedEntry: candidate.suggestedEntry,
+          suggestedStop: candidate.suggestedStop,
+          suggestedTarget: candidate.suggestedTarget,
         });
         candidateCount++;
         setupCounts[candidate.setup] = (setupCounts[candidate.setup] ?? 0) + 1;
