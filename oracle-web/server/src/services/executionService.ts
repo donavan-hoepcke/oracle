@@ -152,8 +152,6 @@ export class ExecutionService {
   }
 
   async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[]): Promise<void> {
-    if (!this.enabled) return;
-
     await this.refreshWashSaleSymbols();
     await this.reconcileWithAlpaca(stocks);
 
@@ -163,6 +161,7 @@ export class ExecutionService {
     await this.checkPendingOrders();
     await this.cancelStaleOrders();
     await this.manageFilled(stocks);
+    if (!this.enabled) return;
     await this.evaluateNewEntries(candidates, account, reservedSymbols);
   }
 
