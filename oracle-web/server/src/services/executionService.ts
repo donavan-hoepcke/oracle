@@ -63,6 +63,12 @@ export class ExecutionService {
   private washSaleRefreshedAt = 0;
   private startOfDayEquity: number | null = null;
   private enabled = config.execution.enabled;
+  // Short window after a flattenAll() where reconcileWithAlpaca() must NOT
+  // re-adopt positions. Alpaca close orders are async; without this, the next
+  // cycle sees the still-open position, re-adopts it, and the EOD check flattens
+  // again — producing duplicate ledger entries.
+  private eodFlattenGraceUntil: number | null = null;
+  private static readonly EOD_FLATTEN_GRACE_MS = 2 * 60 * 1000;
 
   getRejections(): FilterRejection[] {
     return Array.from(this.rejections.values());
@@ -172,6 +178,9 @@ export class ExecutionService {
    * and target where available; falls back to max_risk_pct-derived defaults.
    */
   private async reconcileWithAlpaca(stocks: StockState[]): Promise<void> {
+    if (this.eodFlattenGraceUntil !== null && Date.now() < this.eodFlattenGraceUntil) {
+      return;
+    }
     let positions;
     try {
       positions = await alpacaOrderService.getPositions();
@@ -262,6 +271,7 @@ export class ExecutionService {
       // best effort
     }
     this.activeTrades = [];
+    this.eodFlattenGraceUntil = Date.now() + ExecutionService.EOD_FLATTEN_GRACE_MS;
   }
 
   private async buildAccountState(): Promise<AccountState> {

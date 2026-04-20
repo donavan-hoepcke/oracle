@@ -60,7 +60,7 @@ Chrome (debug port) -> Playwright scraper -> WatchlistItem
 ### Key Services (`oracle-web/server/src/services/`)
 
 - `tickerBotService.ts` — Playwright scraper attached to Chrome via CDP. Reads the Oracle tool page and emits `WatchlistItem` records.
-- `ruleEngineService.ts` — Scores each symbol against Oracle Zone, Red Candle Theory, and Momentum Continuation setups. Enforces gap/momentum chase/uptrend filters. Exposes `suggestedEntry`, `suggestedStop`, `suggestedTarget` on each `TradeCandidate`.
+- `ruleEngineService.ts` — Scores each symbol against four setups: `red_candle_theory`, `momentum_continuation`, `pullback_reclaim`, `crowded_extension_watch`. `pickSetup` prefers `red_candle_theory` whenever the red-candle signal matches, so in practice that setup dominates live candidates (penny-stock names rarely clear the stricter momentum gates: 3% gap, near-buy-zone, `require_uptrend_for_momentum`). Enforces gap/momentum-chase/uptrend filters. Exposes `suggestedEntry`, `suggestedStop`, `suggestedTarget` on each `TradeCandidate` — these are the rule-engine-derived levels (tighter than the wide Oracle watchlist `stopPrice`) and are what the executor and backtest runner use for sizing and exits.
 - `tradeFilterService.ts` — Pre-entry gates (daily drawdown, max positions, capital cap, max risk).
 - `executionService.ts` — Trade lifecycle orchestrator. Adopts existing Alpaca positions on startup, caps reconciled stops at `max_risk_pct`, manages trailing stops, applies cooldown after stop exits, enforces wash-sale bar, runs EOD flatten.
 - `alpacaOrderService.ts` — Alpaca Trading API wrapper (paper endpoint when `execution.paper: true`).

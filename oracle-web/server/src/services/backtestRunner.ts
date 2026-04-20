@@ -274,9 +274,12 @@ export class BacktestRunner {
 
       const item = itemMap.get(decision.symbol);
       if (!item) continue;
-      const entry = item.currentPrice ?? item.buyZonePrice ?? null;
-      const stop = item.stopPrice ?? null;
-      const target = item.sellZonePrice ?? null;
+      // Prefer the rule-engine-derived levels the live engine would have used.
+      // Fall back to Oracle watchlist levels only when the cycle pre-dates
+      // decision-level persistence (legacy recordings).
+      const entry = decision.suggestedEntry ?? item.currentPrice ?? item.buyZonePrice ?? null;
+      const stop = decision.suggestedStop ?? item.stopPrice ?? null;
+      const target = decision.suggestedTarget ?? item.sellZonePrice ?? null;
       if (entry == null || stop == null || target == null || entry <= stop) {
         skipped.push({ symbol: decision.symbol, ts: cycle.ts, reason: 'missing levels' });
         continue;
