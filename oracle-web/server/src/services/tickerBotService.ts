@@ -182,8 +182,16 @@ class PlaywrightTickerSource {
       this.attachedToExistingChrome = true;
 
       const existingContexts = this.browser.contexts();
-      this.context = existingContexts[0] ?? (await this.browser.newContext());
-      this.page = this.findExistingOraclePage(this.context) ?? (await this.context.newPage());
+      const match = this.findExistingOraclePageAcrossContexts(existingContexts);
+      if (match) {
+        this.context = match.context;
+        this.page = match.page;
+        console.log(`Reusing existing debug-Chrome tab: ${match.page.url()}`);
+      } else {
+        this.context = existingContexts[0] ?? (await this.browser.newContext());
+        this.page = await this.context.newPage();
+        console.log('No existing Oracle/login tab found in debug Chrome — opened a new tab.');
+      }
 
       await this.bootstrapPage(this.page);
 
@@ -642,23 +650,43 @@ class PlaywrightTickerSource {
   }
 
   private findExistingOraclePage(context: BrowserContextLike): PageLike | null {
-    const playwrightConfig = config.bot.playwright;
-    const pages = context.pages();
+    const match = this.findExistingOraclePageAcrossContexts([context]);
+    return match?.page ?? null;
+  }
 
-    for (const page of pages) {
-      const url = page.url();
-      if (playwrightConfig.data_page_url && url.includes(playwrightConfig.data_page_url)) {
-        return page;
-      }
-      if (playwrightConfig.login_url && url.includes(playwrightConfig.login_url)) {
-        return page;
-      }
-      if (playwrightConfig.start_url && url.includes(playwrightConfig.start_url)) {
-        return page;
+  /**
+   * Scan every context in the attached debug Chrome for a tab we can reuse.
+   * Prefer the Oracle data tab; fall back to a login tab, then any tab already
+   * on the STT login domain. Only if nothing matches do we open a new tab.
+   * Windows users commonly have multiple Chrome windows/contexts open, so
+   * checking only the first context misses the tab the user already has open.
+   */
+  private findExistingOraclePageAcrossContexts(
+    contexts: BrowserContextLike[],
+  ): { context: BrowserContextLike; page: PageLike } | null {
+    const playwrightConfig = config.bot.playwright;
+    const candidates: Array<{
+      context: BrowserContextLike;
+      page: PageLike;
+      rank: number;
+    }> = [];
+
+    for (const context of contexts) {
+      for (const page of context.pages()) {
+        const url = page.url();
+        if (playwrightConfig.data_page_url && url.includes(playwrightConfig.data_page_url)) {
+          candidates.push({ context, page, rank: 0 });
+        } else if (playwrightConfig.login_url && url.includes(playwrightConfig.login_url)) {
+          candidates.push({ context, page, rank: 1 });
+        } else if (playwrightConfig.start_url && url.includes(playwrightConfig.start_url)) {
+          candidates.push({ context, page, rank: 2 });
+        }
       }
     }
 
-    return null;
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => a.rank - b.rank);
+    return { context: candidates[0].context, page: candidates[0].page };
   }
 
   private validateOracleSchema(fields: Record<string, string>): void {
