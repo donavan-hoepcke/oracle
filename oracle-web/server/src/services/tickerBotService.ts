@@ -42,6 +42,7 @@ export interface PlaywrightDebugReport {
 }
 
 const REQUIRED_TICKER_COUNT = 20;
+const TICKER_SYMBOL_RE = /^[A-Z]{1,5}$/;
 
 type WatchlistCallback = (items: WatchlistItem[]) => void;
 
@@ -116,6 +117,41 @@ interface ScrapedRow {
   rawTargetPrice: string;
   rawResistance: string;
   oracleFields: Record<string, string>;
+}
+
+function isLikelyTickerSymbol(symbol: string | null | undefined): boolean {
+  if (!symbol) return false;
+  return TICKER_SYMBOL_RE.test(symbol.trim().toUpperCase());
+}
+
+function hasInvalidZoneOrdering(item: WatchlistItem): boolean {
+  return (
+    item.stopPrice !== null &&
+    item.stopPrice !== undefined &&
+    item.buyZonePrice !== null &&
+    item.buyZonePrice !== undefined &&
+    item.sellZonePrice !== null &&
+    item.sellZonePrice !== undefined &&
+    !(item.stopPrice < item.buyZonePrice && item.buyZonePrice < item.sellZonePrice)
+  );
+}
+
+export function sanitizeWatchlistItems(items: WatchlistItem[]): WatchlistItem[] {
+  return items.filter((item) => {
+    const symbol = item.symbol?.trim().toUpperCase();
+    if (!isLikelyTickerSymbol(symbol)) {
+      return false;
+    }
+
+    if (hasInvalidZoneOrdering(item)) {
+      console.warn(
+        `Dropping ${symbol}: invalid zone ordering stop=${item.stopPrice} buy=${item.buyZonePrice} sell=${item.sellZonePrice}`,
+      );
+      return false;
+    }
+
+    return true;
+  });
 }
 
 class PlaywrightTickerSource {
@@ -241,7 +277,7 @@ class PlaywrightTickerSource {
           const targetPrice = explicitTarget ?? buyZonePrice ?? 0;
           const resistance = explicitResistance ?? sellZonePrice ?? null;
 
-          deduped.set(row.symbol, {
+          const item: WatchlistItem = {
             symbol: row.symbol,
             targetPrice,
             resistance,
@@ -261,7 +297,19 @@ class PlaywrightTickerSource {
             relativeVolume,
             floatMillions,
             gapPercent,
-          });
+          };
+
+          if (!isLikelyTickerSymbol(item.symbol)) {
+            continue;
+          }
+          if (hasInvalidZoneOrdering(item)) {
+            console.warn(
+              `Dropping ${item.symbol}: invalid zone ordering stop=${item.stopPrice} buy=${item.buyZonePrice} sell=${item.sellZonePrice}`,
+            );
+            continue;
+          }
+
+          deduped.set(item.symbol, item);
         }
       }
 
@@ -656,7 +704,7 @@ class TickerBotService {
   private normalizeToTwenty(items: WatchlistItem[]): WatchlistItem[] {
     const deduped = new Map<string, WatchlistItem>();
 
-    for (const item of items) {
+    for (const item of sanitizeWatchlistItems(items)) {
       const symbol = item.symbol?.trim().toUpperCase();
       if (!symbol) continue;
       if (!deduped.has(symbol)) {
