@@ -32,6 +32,13 @@ export interface RecordedDecision {
   score: number;
   rationale: string[];
   rejectionReason?: string;
+  // Strategy-resolved levels — present when the rule engine recommended a
+  // specific entry/stop/target that differs from the Oracle defaults (e.g.
+  // ORB uses the opening-range low as the stop). Backtest replay prefers
+  // these over the Oracle levels from RecordedItem when available.
+  suggestedEntry?: number | null;
+  suggestedStop?: number | null;
+  suggestedTarget?: number | null;
 }
 
 export interface CycleRecord {
@@ -88,6 +95,9 @@ function toDecisions(candidates: TradeCandidate[], rejections: FilterRejection[]
       setup: c.setup,
       score: c.score,
       rationale: c.rationale,
+      suggestedEntry: c.suggestedEntry,
+      suggestedStop: c.suggestedStop,
+      suggestedTarget: c.suggestedTarget,
     });
   }
   for (const r of rejections) {

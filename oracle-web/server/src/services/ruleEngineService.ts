@@ -1,6 +1,7 @@
 import { formatInTimeZone } from 'date-fns-tz';
 import { StockState } from '../websocket/priceSocket.js';
 import { fetchAlpaca1MinBars } from './alpacaBarService.js';
+import { Bar } from './indicatorService.js';
 import { SymbolMessageContext, messageService, SetupTag } from './messageService.js';
 import { config } from '../config.js';
 
@@ -85,6 +86,109 @@ export interface TradeCandidate {
   suggestedEntry: number;
   suggestedStop: number;
   suggestedTarget: number;
+}
+
+/**
+ * Pure ORB (Opening Range Breakout) signal computation. Takes a preloaded
+ * 1m bar series and evaluates as of `now`: builds the 9:30–(9:30 +
+ * orb_range_minutes) ET high/low, then looks at the bars after the range
+ * (but at or before `now`) for a close above the range high with volume
+ * confirmation. Returns matched=true when the breakout bar also satisfies
+ * chase-distance and min-range-size guards.
+ *
+ * Factored out so offline tooling (historical replay) can feed in-memory
+ * bars instead of hitting Alpaca for every symbol×minute.
+ */
+export function computeOrbSignal(stock: StockState, bars: Bar[], now: Date): OrbSignal {
+  if (!config.execution.orb_enabled) return emptyOrbSignal();
+  if (bars.length === 0) return emptyOrbSignal();
+
+  const tz = config.market_hours.timezone;
+  const rangeMin = config.execution.orb_range_minutes;
+  const todayEt = formatInTimeZone(now, tz, 'yyyy-MM-dd');
+  const rangeStartMin = 9 * 60 + 30;
+  const rangeEndMin = rangeStartMin + rangeMin;
+  const nowMs = now.getTime();
+
+  const openingBars = bars.filter((bar) => {
+    if (bar.timestamp.getTime() > nowMs) return false;
+    const etDate = formatInTimeZone(bar.timestamp, tz, 'yyyy-MM-dd');
+    if (etDate !== todayEt) return false;
+    const [h, m] = formatInTimeZone(bar.timestamp, tz, 'HH:mm').split(':').map(Number);
+    const minOfDay = h * 60 + m;
+    return minOfDay >= rangeStartMin && minOfDay < rangeEndMin;
+  });
+
+  // Require at least half the range-window bars so a stray data gap in the
+  // first couple minutes doesn't build a range out of a single candle.
+  if (openingBars.length < Math.ceil(rangeMin / 2)) return emptyOrbSignal();
+
+  const rangeHigh = Math.max(...openingBars.map((b) => b.high));
+  const rangeLow = Math.min(...openingBars.map((b) => b.low));
+  const avgRangeVol = openingBars.reduce((sum, b) => sum + b.volume, 0) / openingBars.length;
+
+  const lastOpeningTs = openingBars[openingBars.length - 1].timestamp.getTime();
+  const postBars = bars.filter(
+    (b) => b.timestamp.getTime() > lastOpeningTs && b.timestamp.getTime() <= nowMs,
+  );
+  if (postBars.length === 0) {
+    return {
+      matched: false,
+      rangeHigh,
+      rangeLow,
+      entry: rangeHigh,
+      stop: rangeLow,
+      rrToSellZone: null,
+      details: [],
+    };
+  }
+
+  const latest = postBars[postBars.length - 1];
+  const breakAbove = latest.close > rangeHigh;
+  const volumeConfirm = latest.volume >= avgRangeVol * config.execution.orb_volume_mult;
+  const referencePrice = stock.currentPrice ?? latest.close;
+  const chasePct = rangeHigh > 0 ? (referencePrice - rangeHigh) / rangeHigh : Infinity;
+  const withinChase = chasePct <= config.execution.orb_max_chase_pct;
+  const rangePct = rangeHigh > 0 ? (rangeHigh - rangeLow) / rangeHigh : 0;
+  const rangeValid = rangeHigh > rangeLow && rangePct >= config.execution.orb_min_range_pct;
+
+  const risk = rangeHigh - rangeLow;
+  const reward =
+    stock.sellZonePrice !== null && stock.sellZonePrice !== undefined
+      ? stock.sellZonePrice - rangeHigh
+      : null;
+  const rrToSellZone = reward !== null && risk > 0 ? reward / risk : null;
+
+  const matched = breakAbove && volumeConfirm && withinChase && rangeValid;
+  if (!matched) {
+    return {
+      matched: false,
+      rangeHigh,
+      rangeLow,
+      entry: rangeHigh,
+      stop: rangeLow,
+      rrToSellZone,
+      details: [],
+    };
+  }
+
+  const details = [
+    `ORB-${rangeMin} breakout above ${rangeHigh.toFixed(3)}`,
+    `Suggested stop ${rangeLow.toFixed(3)} (opening range low)`,
+  ];
+  if (typeof rrToSellZone === 'number') {
+    details.push(`Estimated R:R to sell zone ${rrToSellZone.toFixed(2)}x`);
+  }
+
+  return {
+    matched: true,
+    rangeHigh,
+    rangeLow,
+    entry: rangeHigh,
+    stop: rangeLow,
+    rrToSellZone,
+    details,
+  };
 }
 
 class RuleEngineService {
@@ -345,107 +449,13 @@ class RuleEngineService {
     return pctAbove <= config.execution.momentum_max_chase_pct;
   }
 
-  /**
-   * 15-minute opening-range breakout detector. Fetches today's 1m bars,
-   * builds the high/low of 9:30–(9:30 + orb_range_minutes) ET, and returns
-   * matched=true when a post-range bar closes above the range high with
-   * volume confirmation and the current price is still within
-   * orb_max_chase_pct of the breakout level. The stop is the range low and
-   * the entry is the range high — downstream scoring prefers the Oracle sell
-   * zone as target when it clears 1R, otherwise a synthetic 1R target.
-   */
   private async detectOrbBreakout(stock: StockState): Promise<OrbSignal> {
     if (!config.execution.orb_enabled) return emptyOrbSignal();
-
     try {
-      const rangeMin = config.execution.orb_range_minutes;
       // 6.5h covers the full RTH session so a late-afternoon poll still sees
       // the 9:30 open bars.
       const bars = await fetchAlpaca1MinBars(stock.symbol, 390);
-      if (bars.length === 0) return emptyOrbSignal();
-
-      const tz = config.market_hours.timezone;
-      const todayEt = formatInTimeZone(new Date(), tz, 'yyyy-MM-dd');
-      const rangeStartMin = 9 * 60 + 30;
-      const rangeEndMin = rangeStartMin + rangeMin;
-
-      const openingBars = bars.filter((bar) => {
-        const etDate = formatInTimeZone(bar.timestamp, tz, 'yyyy-MM-dd');
-        if (etDate !== todayEt) return false;
-        const [h, m] = formatInTimeZone(bar.timestamp, tz, 'HH:mm').split(':').map(Number);
-        const minOfDay = h * 60 + m;
-        return minOfDay >= rangeStartMin && minOfDay < rangeEndMin;
-      });
-
-      // Require at least half the range-window bars so a stray data gap in
-      // the first couple minutes doesn't build a range out of one candle.
-      if (openingBars.length < Math.ceil(rangeMin / 2)) return emptyOrbSignal();
-
-      const rangeHigh = Math.max(...openingBars.map((b) => b.high));
-      const rangeLow = Math.min(...openingBars.map((b) => b.low));
-      const avgRangeVol =
-        openingBars.reduce((sum, b) => sum + b.volume, 0) / openingBars.length;
-
-      const lastOpeningTs = openingBars[openingBars.length - 1].timestamp.getTime();
-      const postBars = bars.filter((b) => b.timestamp.getTime() > lastOpeningTs);
-      if (postBars.length === 0) {
-        return {
-          matched: false,
-          rangeHigh,
-          rangeLow,
-          entry: rangeHigh,
-          stop: rangeLow,
-          rrToSellZone: null,
-          details: [],
-        };
-      }
-
-      const latest = postBars[postBars.length - 1];
-      const breakAbove = latest.close > rangeHigh;
-      const volumeConfirm = latest.volume >= avgRangeVol * config.execution.orb_volume_mult;
-      const referencePrice = stock.currentPrice ?? latest.close;
-      const chasePct = rangeHigh > 0 ? (referencePrice - rangeHigh) / rangeHigh : Infinity;
-      const withinChase = chasePct <= config.execution.orb_max_chase_pct;
-      const rangePct = rangeHigh > 0 ? (rangeHigh - rangeLow) / rangeHigh : 0;
-      const rangeValid = rangeHigh > rangeLow && rangePct >= config.execution.orb_min_range_pct;
-
-      const risk = rangeHigh - rangeLow;
-      const reward =
-        stock.sellZonePrice !== null && stock.sellZonePrice !== undefined
-          ? stock.sellZonePrice - rangeHigh
-          : null;
-      const rrToSellZone = reward !== null && risk > 0 ? reward / risk : null;
-
-      const matched = breakAbove && volumeConfirm && withinChase && rangeValid;
-      if (!matched) {
-        return {
-          matched: false,
-          rangeHigh,
-          rangeLow,
-          entry: rangeHigh,
-          stop: rangeLow,
-          rrToSellZone,
-          details: [],
-        };
-      }
-
-      const details = [
-        `ORB-${rangeMin} breakout above ${rangeHigh.toFixed(3)}`,
-        `Suggested stop ${rangeLow.toFixed(3)} (opening range low)`,
-      ];
-      if (typeof rrToSellZone === 'number') {
-        details.push(`Estimated R:R to sell zone ${rrToSellZone.toFixed(2)}x`);
-      }
-
-      return {
-        matched: true,
-        rangeHigh,
-        rangeLow,
-        entry: rangeHigh,
-        stop: rangeLow,
-        rrToSellZone,
-        details,
-      };
+      return computeOrbSignal(stock, bars, new Date());
     } catch {
       return emptyOrbSignal();
     }
