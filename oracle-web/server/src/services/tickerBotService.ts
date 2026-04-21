@@ -60,7 +60,7 @@ interface BrowserContextLike {
 }
 
 interface PageLike {
-  goto: (url: string, options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' }) => Promise<void>;
+  goto: (url: string, options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' }) => Promise<unknown>;
   waitForSelector: (selector: string, options?: { timeout?: number }) => Promise<unknown>;
   fill: (selector: string, value: string) => Promise<void>;
   click: (selector: string) => Promise<void>;
@@ -171,18 +171,20 @@ class PlaywrightTickerSource {
 
     if (useExistingChrome) {
       const cdpUrl = config.bot.playwright.chrome_cdp_url;
+      let browser: BrowserLike;
       try {
-        this.browser = await chromium.connectOverCDP(cdpUrl);
+        browser = await chromium.connectOverCDP(cdpUrl);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         throw new Error(
           `Unable to attach to existing Chrome at ${cdpUrl}. Start Chrome with remote debugging enabled (for example: chrome.exe --remote-debugging-port=9222), then retry. Details: ${detail}`
         );
       }
+      this.browser = browser;
       this.attachedToExistingChrome = true;
 
-      const existingContexts = this.browser.contexts();
-      this.context = existingContexts[0] ?? (await this.browser.newContext());
+      const existingContexts = browser.contexts();
+      this.context = existingContexts[0] ?? (await browser.newContext());
       this.page = this.findExistingOraclePage(this.context) ?? (await this.context.newPage());
 
       await this.bootstrapPage(this.page);
@@ -196,13 +198,14 @@ class PlaywrightTickerSource {
 
     this.attachedToExistingChrome = false;
 
-    this.browser = await chromium.launch({
+    const browser: BrowserLike = await chromium.launch({
       headless: config.bot.playwright.headless,
     });
+    this.browser = browser;
 
     const sessionStatePath = this.getSessionStatePath();
     const usePersistedState = config.bot.playwright.persist_session && existsSync(sessionStatePath);
-    this.context = await this.browser.newContext(usePersistedState ? { storageState: sessionStatePath } : undefined);
+    this.context = await browser.newContext(usePersistedState ? { storageState: sessionStatePath } : undefined);
     this.page = await this.context.newPage();
     await this.bootstrapPage(this.page);
 
