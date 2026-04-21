@@ -142,6 +142,31 @@ export class ExecutionService {
     return [...this.ledger];
   }
 
+  /**
+   * Seed the in-memory ledger from persisted entries (e.g. today's JSONL
+   * recording after a server restart). Skips duplicates keyed on
+   * symbol + entryTime so it's safe to call before or after live trading.
+   */
+  hydrateLedger(entries: TradeLedgerEntry[]): number {
+    const seen = new Set(
+      this.ledger.map((e) => `${e.symbol}|${new Date(e.entryTime).toISOString()}`),
+    );
+    let added = 0;
+    for (const raw of entries) {
+      const entryTime = new Date(raw.entryTime);
+      const key = `${raw.symbol}|${entryTime.toISOString()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      this.ledger.push({
+        ...raw,
+        entryTime,
+        exitTime: new Date(raw.exitTime),
+      });
+      added++;
+    }
+    return added;
+  }
+
   getDailyPnl(): number {
     return this.ledger.reduce((sum, t) => sum + t.pnl, 0);
   }

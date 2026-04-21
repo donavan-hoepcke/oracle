@@ -437,4 +437,44 @@ describe('ExecutionService', () => {
       expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
     });
   });
+
+  describe('hydrateLedger', () => {
+    const entry = (symbol: string, entryTime: string, pnl: number) =>
+      ({
+        symbol,
+        strategy: 'momentum_continuation' as const,
+        entryPrice: 1,
+        entryTime: entryTime as unknown as Date,
+        exitPrice: 1 + pnl,
+        exitTime: entryTime as unknown as Date,
+        shares: 100,
+        pnl,
+        pnlPct: pnl * 100,
+        rMultiple: pnl,
+        exitReason: 'target' as const,
+        exitDetail: '',
+        rationale: [],
+      });
+
+    it('imports entries, normalizes dates, and contributes to daily P&L', () => {
+      service.hydrateLedger([
+        entry('AAA', '2026-04-21T13:30:00.000Z', 10),
+        entry('BBB', '2026-04-21T14:00:00.000Z', -4),
+      ]);
+      const ledger = service.getLedger();
+      expect(ledger).toHaveLength(2);
+      expect(ledger[0].entryTime).toBeInstanceOf(Date);
+      expect(ledger[0].exitTime).toBeInstanceOf(Date);
+      expect(service.getDailyPnl()).toBeCloseTo(6, 5);
+    });
+
+    it('dedupes on symbol + entryTime across repeated hydrations', () => {
+      const first = entry('AAA', '2026-04-21T13:30:00.000Z', 10);
+      service.hydrateLedger([first]);
+      const added = service.hydrateLedger([first, entry('CCC', '2026-04-21T15:00:00.000Z', 7)]);
+      expect(added).toBe(1);
+      expect(service.getLedger()).toHaveLength(2);
+      expect(service.getLedger().map((e) => e.symbol).sort()).toEqual(['AAA', 'CCC']);
+    });
+  });
 });
