@@ -1,13 +1,18 @@
 import { FormEvent, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ScannerRow, ScannerSnapshot, ScannerStatus } from '../types';
+import { JournalSnapshot, ScannerRow, ScannerSnapshot, ScannerStatus } from '../types';
 import { ZoneBar } from './ZoneBar';
+import { AccountSummaryCard } from './AccountSummaryCard';
 
 interface ScannerPageProps {
   snapshot: ScannerSnapshot | null;
   isLoading: boolean;
   error: string | null;
   onRefresh: () => Promise<void>;
+  journalSnapshot: JournalSnapshot | null;
+  journalLoading: boolean;
+  journalError: string | null;
+  journalRefresh: () => Promise<void>;
 }
 
 const STATUS_ORDER: Record<ScannerStatus, number> = {
@@ -86,7 +91,16 @@ function rowWhy(row: ScannerRow): string {
 
 const ALL_STATUSES: ScannerStatus[] = ['traded', 'rejected', 'candidate', 'setup', 'blown_out', 'watch', 'dead'];
 
-export function ScannerPage({ snapshot, isLoading, error, onRefresh }: ScannerPageProps) {
+export function ScannerPage({
+  snapshot,
+  isLoading,
+  error,
+  onRefresh,
+  journalSnapshot,
+  journalLoading,
+  journalError,
+  journalRefresh,
+}: ScannerPageProps) {
   const [hiddenStatuses, setHiddenStatuses] = useState<Set<ScannerStatus>>(new Set(['dead']));
   const [sortKey, setSortKey] = useState<'default' | 'pctChange' | 'pctToBuy'>('default');
   const [lookup, setLookup] = useState('');
@@ -161,6 +175,13 @@ export function ScannerPage({ snapshot, isLoading, error, onRefresh }: ScannerPa
 
   return (
     <div className="space-y-4">
+      <AccountSummaryCard
+        snapshot={journalSnapshot}
+        isLoading={journalLoading}
+        error={journalError}
+        onRefresh={journalRefresh}
+      />
+
       {/* Filter bar */}
       <div className="bg-white rounded-lg shadow p-3 flex flex-wrap items-center gap-2 text-sm">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide mr-1">Show</span>
