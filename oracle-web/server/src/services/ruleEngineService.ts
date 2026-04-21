@@ -120,9 +120,13 @@ class RuleEngineService {
     }
 
     const suggestedEntry = stock.currentPrice ?? stock.buyZonePrice ?? 0;
+    // Clamp at 99% of max_risk_pct so downstream filters (which reject when
+    // riskPct > max_risk_pct) don't trip on floating-point ties at exactly
+    // the cap.
+    const maxRiskStop = suggestedEntry * (1 - config.execution.max_risk_pct * 0.99);
     const suggestedStop = redCandleSignal.matched && redCandleSignal.stop
       ? redCandleSignal.stop
-      : (stock.stopPrice ?? 0);
+      : Math.max(stock.stopPrice ?? 0, maxRiskStop);
     const suggestedTarget = stock.sellZonePrice ?? 0;
 
     return {
