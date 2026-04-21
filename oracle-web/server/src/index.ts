@@ -12,6 +12,7 @@ import { ruleEngineService } from './services/ruleEngineService.js';
 import { executionService } from './services/executionService.js';
 import { backtestRunner } from './services/backtestRunner.js';
 import { synthesizeDay } from './services/recordingSynthService.js';
+import { floatMapService } from './services/floatMapService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -162,6 +163,10 @@ app.get('/api/messages', (req, res) => {
     count: limit,
     events: messageService.getRecent(limit),
   });
+});
+
+app.get('/api/floatmap', (_req, res) => {
+  res.json(floatMapService.getSnapshot());
 });
 
 app.get('/api/trade-candidates', async (_req, res) => {
@@ -462,6 +467,11 @@ if (existsSync(distPath)) {
 // Initialize WebSocket server
 priceSocketServer.initialize(server);
 
+// Start FloatMAP polling (no-op when disabled in config).
+floatMapService.start().catch((err) => {
+  console.warn('floatMap start failed:', err instanceof Error ? err.message : err);
+});
+
 // Start server
 server.listen(config.port, () => {
   console.log(`Oracle server running on http://localhost:${config.port}`);
@@ -472,6 +482,7 @@ server.listen(config.port, () => {
 process.on('SIGINT', () => {
   console.log('\nShutting down...');
   priceSocketServer.shutdown();
+  floatMapService.stop().catch(() => {});
   server.close(() => {
     process.exit(0);
   });

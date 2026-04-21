@@ -39,6 +39,12 @@ bot:
       - "float"
       - "mk_cap"
     oracle_schema_strict: false
+  floatmap:
+    enabled: true
+    url: "https://university.stockstotrade.com/page/Oracle-FloatMAP"
+    poll_interval_sec: 120
+    frame_url_contains: "amplifyapp.com"
+    hydration_wait_ms: 8000
 execution:
   enabled: true
   paper: true
