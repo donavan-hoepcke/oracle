@@ -82,7 +82,7 @@ Chrome (debug port) -> Playwright scraper -> WatchlistItem
 
 ## Configuration
 
-### Environment (`oracle-web/server/.env`)
+### Environment (`oracle-web/.env`)
 
 ```bash
 APCA_API_KEY_ID=...        # Alpaca API key
