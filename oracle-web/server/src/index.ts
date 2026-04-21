@@ -561,6 +561,21 @@ if (existsSync(distPath)) {
 // Initialize WebSocket server
 priceSocketServer.initialize(server);
 
+// Rehydrate today's closed-trade ledger from the JSONL recording so a
+// server restart mid-session doesn't lose the realized trade log.
+try {
+  const [today] = journalHistoryService.listDays();
+  const day = today ? journalHistoryService.getDay(today) : null;
+  if (day && day.closed.length > 0) {
+    const added = executionService.hydrateLedger(day.closed);
+    if (added > 0) {
+      console.log(`Hydrated ${added} closed trade(s) for ${today} from recording`);
+    }
+  }
+} catch (err) {
+  console.warn('Ledger hydration failed:', err instanceof Error ? err.message : err);
+}
+
 // Start FloatMAP polling (no-op when disabled in config).
 floatMapService.start().catch((err) => {
   console.warn('floatMap start failed:', err instanceof Error ? err.message : err);
