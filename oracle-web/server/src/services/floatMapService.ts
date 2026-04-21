@@ -130,9 +130,8 @@ export class FloatMapService {
 
   /**
    * Attach to the debug Chrome and grab the FloatMAP iframe's rendered text.
-   * Separate CDP connection from tickerBotService's — multiple Playwright
-   * clients against the same browser are supported and keep lifetimes
-   * independent.
+   * Reuses an existing tab at the FloatMAP URL when present so repeated polls
+   * don't flash a new tab open-and-closed in the user's Chrome window.
    */
   private async fetchFrameText(): Promise<string> {
     const { chromium } = await import('playwright');
@@ -142,17 +141,15 @@ export class FloatMapService {
       const contexts = browser.contexts();
       if (contexts.length === 0) throw new Error('no Chrome contexts attached');
       const context = contexts[0];
-      const page = await context.newPage();
-      try {
+      const existing = context.pages().find((p) => p.url().includes(fm.url));
+      const page = existing ?? (await context.newPage());
+      if (!existing) {
         await page.goto(fm.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
         await page.waitForTimeout(fm.hydration_wait_ms);
-        const frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
-        if (!frame) throw new Error(`no frame matching "${fm.frame_url_contains}"`);
-        const text = (await frame.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
-        return text;
-      } finally {
-        await page.close();
       }
+      const frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
+      if (!frame) throw new Error(`no frame matching "${fm.frame_url_contains}"`);
+      return (await frame.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
     } finally {
       await browser.close();
     }

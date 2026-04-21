@@ -250,15 +250,13 @@ export class ModeratorAlertService {
       const contexts = browser.contexts();
       if (contexts.length === 0) throw new Error('no Chrome contexts attached');
       const context = contexts[0];
-      const page = await context.newPage();
-      try {
+      const existing = context.pages().find((p) => p.url().includes(cfg.url));
+      const page = existing ?? (await context.newPage());
+      if (!existing) {
         await page.goto(cfg.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
         await page.waitForTimeout(cfg.hydration_wait_ms);
-        const text = (await page.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
-        return text;
-      } finally {
-        await page.close();
       }
+      return (await page.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
     } finally {
       await browser.close();
     }
