@@ -22,6 +22,8 @@ vi.mock('../config.js', () => ({
       trailing_breakeven_r: 1.0,
       trailing_start_r: 2.0,
       trailing_distance_r: 1.0,
+      trailing_mfe_activate_r: 0.5,
+      trailing_mfe_giveback_pct: 0.5,
       eod_flatten_time: '15:50',
     },
     market_hours: { timezone: 'America/New_York' },
@@ -148,7 +150,7 @@ describe('ExecutionService', () => {
   });
 
   describe('trailing stop', () => {
-    it('moves stop to breakeven at 1R', async () => {
+    it('moves stop past breakeven at 1R (MFE lock dominates)', async () => {
       // Risk=10% (entry 0.50, stop 0.45) to stay within the max_risk_pct clamp
       const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
       const stocks = [makeStockState('AGAE', 0.50)];
@@ -158,11 +160,84 @@ describe('ExecutionService', () => {
       mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
       await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
 
-      // Price moves to 1R (0.50 + 0.05 = 0.55)
+      // Price moves to 1R (0.50 + 0.05 = 0.55). MFE lock at 50% giveback
+      // pulls the stop to entry + 0.5R = 0.525, which beats the bare-breakeven
+      // 0.50. State marker flips to 'breakeven' to reflect the tier progression.
       await service.onPriceCycle([], [makeStockState('AGAE', 0.55)]);
 
       const trade = service.getActiveTrades().find(t => t.symbol === 'AGAE');
-      expect(trade?.currentStop).toBe(0.50);
+      expect(trade?.currentStop).toBeCloseTo(0.525, 3);
+      expect(trade?.trailingState).toBe('breakeven');
+    });
+
+    it('does not move stop when MFE stays below the give-back activation threshold', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Peak 0.4R = 0.50 + 0.4 * 0.05 = 0.52 (below 0.5R activate)
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.52)]);
+
+      const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
+      expect(trade?.currentStop).toBeCloseTo(0.45, 3);
+      expect(trade?.trailingState).toBe('initial');
+      expect(trade?.maxFavorableR).toBeCloseTo(0.4, 3);
+    });
+
+    it('locks in 50% of peak gain once MFE crosses 0.5R and holds on pullback', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Peak 0.6R (0.50 + 0.6 * 0.05 = 0.53)
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.53)]);
+      // Pull back to 0.4R (0.52)
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.52)]);
+
+      const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
+      // Stop = entry + 0.6R * (1 - 0.5) = 0.50 + 0.015 = 0.515
+      expect(trade?.currentStop).toBeCloseTo(0.515, 3);
+      expect(trade?.trailingState).toBe('mfe_lock');
+      expect(trade?.maxFavorableR).toBeCloseTo(0.6, 3);
+    });
+
+    it('exits via trailing_stop when a post-peak pullback crosses the MFE lock', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Peak 0.8R (0.54), lock = entry + 0.4R = 0.52
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.54)]);
+      // Pullback to 0.515 — below the 0.52 lock
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.515)]);
+
+      expect(mockOrderService.closePosition).toHaveBeenCalledWith('AGAE');
+      const ledger = service.getLedger();
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0].exitReason).toBe('trailing_stop');
+      expect(ledger[0].pnl).toBeGreaterThan(0);
+    });
+
+    it('keeps the 1R breakeven tier when MFE lock is tighter-or-equal at 1R', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Peak at exactly 1R (0.55). MFE stop = entry + 0.5R = 0.525, breakeven = 0.50.
+      // The 1R tier flips the state label to 'breakeven' as a progression marker,
+      // but the MFE lock is tighter so it wins the currentStop via Math.max.
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.55)]);
+
+      const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
+      expect(trade?.currentStop).toBeCloseTo(0.525, 3);
       expect(trade?.trailingState).toBe('breakeven');
     });
 

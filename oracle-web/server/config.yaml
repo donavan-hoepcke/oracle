@@ -65,6 +65,8 @@ execution:
   trailing_breakeven_r: 1.0
   trailing_start_r: 2.0
   trailing_distance_r: 1.0
+  trailing_mfe_activate_r: 0.5
+  trailing_mfe_giveback_pct: 0.5
   eod_flatten_time: "15:50"
 market_hours:
   open: "09:30"
