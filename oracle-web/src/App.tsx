@@ -219,6 +219,10 @@ function App() {
                 isLoading={scannerLoading}
                 error={scannerError}
                 onRefresh={scannerRefresh}
+                journalSnapshot={journalSnapshot}
+                journalLoading={journalLoading}
+                journalError={journalError}
+                journalRefresh={journalRefresh}
               />
             }
           />
