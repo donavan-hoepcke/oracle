@@ -16,7 +16,10 @@ export interface ActiveTrade {
   riskPerShare: number;
   orderId: string;
   status: 'pending' | 'filled' | 'exiting';
-  trailingState: 'initial' | 'breakeven' | 'trailing';
+  trailingState: 'initial' | 'mfe_lock' | 'breakeven' | 'trailing';
+  // Max favorable R-multiple observed since entry. Drives the give-back stop
+  // so peaks below the 1R breakeven threshold still ratchet the stop up.
+  maxFavorableR: number;
   pendingSince: Date;
   rationale: string[];
 }
@@ -202,6 +205,15 @@ export class ExecutionService {
           ? stock.sellZonePrice
           : entry * (1 + exec.max_risk_pct * 3);
 
+      // Seed MFE from the current unrealized gain so positions adopted above
+      // break-even immediately get the give-back lock applied on the next tick
+      // (instead of resetting the peak to 0 and waiting for another run-up).
+      const riskPerShare = entry - initialStop;
+      const currentR =
+        riskPerShare > 0 && pos.currentPrice > entry
+          ? (pos.currentPrice - entry) / riskPerShare
+          : 0;
+
       this.activeTrades.push({
         symbol: pos.symbol,
         strategy: 'momentum_continuation',
@@ -211,10 +223,11 @@ export class ExecutionService {
         initialStop,
         currentStop: initialStop,
         target,
-        riskPerShare: entry - initialStop,
+        riskPerShare,
         orderId: '',
         status: 'filled',
         trailingState: 'initial',
+        maxFavorableR: currentR,
         pendingSince: new Date(),
         rationale: [
           `Adopted orphaned Alpaca position (original strategy unknown)`,
@@ -367,6 +380,7 @@ export class ExecutionService {
           orderId: order.id,
           status: 'pending',
           trailingState: 'initial',
+          maxFavorableR: 0,
           pendingSince: new Date(),
           rationale: [...candidate.rationale, `Score ${candidate.score.toFixed(0)} | ${candidate.setup}`],
         });
@@ -458,13 +472,30 @@ export class ExecutionService {
         ? (currentPrice - trade.entryPrice) / trade.riskPerShare
         : 0;
 
+      // Track max favorable excursion so the give-back stop is ratcheted by
+      // the peak, not the current price.
+      if (rMultiple > trade.maxFavorableR) trade.maxFavorableR = rMultiple;
+
+      // MFE give-back lock: once the trade has printed at least
+      // trailing_mfe_activate_r of unrealized gain, pull the stop up so we
+      // give back at most trailing_mfe_giveback_pct of the peak. This fires
+      // well below the 1R breakeven tier and captures fades from <1R peaks.
+      if (trade.maxFavorableR >= exec.trailing_mfe_activate_r && trade.riskPerShare > 0) {
+        const lockedR = trade.maxFavorableR * (1 - exec.trailing_mfe_giveback_pct);
+        const mfeStop = trade.entryPrice + lockedR * trade.riskPerShare;
+        if (mfeStop > trade.currentStop) {
+          trade.currentStop = mfeStop;
+          if (trade.trailingState === 'initial') trade.trailingState = 'mfe_lock';
+        }
+      }
+
       if (rMultiple >= exec.trailing_start_r) {
         const newStop = currentPrice - exec.trailing_distance_r * trade.riskPerShare;
         trade.currentStop = Math.max(trade.currentStop, newStop);
         trade.trailingState = 'trailing';
       } else if (rMultiple >= exec.trailing_breakeven_r) {
         trade.currentStop = Math.max(trade.currentStop, trade.entryPrice);
-        trade.trailingState = 'breakeven';
+        if (trade.trailingState !== 'trailing') trade.trailingState = 'breakeven';
       }
     }
   }

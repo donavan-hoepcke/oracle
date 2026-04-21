@@ -99,6 +99,11 @@ const configSchema = z.object({
       trailing_breakeven_r: z.number().positive().default(1.0),
       trailing_start_r: z.number().positive().default(2.0),
       trailing_distance_r: z.number().positive().default(1.0),
+      // MFE-based give-back lock: once peak R crosses trailing_mfe_activate_r,
+      // the stop is pulled up so we give back at most trailing_mfe_giveback_pct
+      // of the peak unrealized gain.
+      trailing_mfe_activate_r: z.number().positive().default(0.5),
+      trailing_mfe_giveback_pct: z.number().min(0).max(1).default(0.5),
       eod_flatten_time: z.string().regex(/^\d{2}:\d{2}$/).default('15:50'),
     })
     .default({}),
