@@ -274,9 +274,11 @@ export class BacktestRunner {
 
       const item = itemMap.get(decision.symbol);
       if (!item) continue;
-      const entry = item.currentPrice ?? item.buyZonePrice ?? null;
-      const stop = item.stopPrice ?? null;
-      const target = item.sellZonePrice ?? null;
+      // Prefer strategy-resolved levels (e.g. ORB uses range-low stop); fall
+      // back to Oracle levels for legacy decisions that predate this field.
+      const entry = decision.suggestedEntry ?? item.currentPrice ?? item.buyZonePrice ?? null;
+      const stop = decision.suggestedStop ?? item.stopPrice ?? null;
+      const target = decision.suggestedTarget ?? item.sellZonePrice ?? null;
       if (entry == null || stop == null || target == null || entry <= stop) {
         skipped.push({ symbol: decision.symbol, ts: cycle.ts, reason: 'missing levels' });
         continue;

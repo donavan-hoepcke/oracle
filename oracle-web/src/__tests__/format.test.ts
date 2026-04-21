@@ -153,6 +153,10 @@ describe('setupLabel', () => {
     expect(setupLabel('crowded_extension_watch')).toBe('Crowded Extension Watch');
   });
 
+  it('converts orb_breakout', () => {
+    expect(setupLabel('orb_breakout')).toBe('Opening Range Breakout');
+  });
+
   it('falls back to raw value for unknown setup', () => {
     expect(setupLabel('unknown_setup' as any)).toBe('unknown_setup');
   });

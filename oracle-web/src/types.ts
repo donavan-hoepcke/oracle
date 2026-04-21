@@ -79,7 +79,8 @@ export type CandidateSetup =
   | 'red_candle_theory'
   | 'momentum_continuation'
   | 'pullback_reclaim'
-  | 'crowded_extension_watch';
+  | 'crowded_extension_watch'
+  | 'orb_breakout';
 
 export interface TradeCandidate {
   symbol: string;

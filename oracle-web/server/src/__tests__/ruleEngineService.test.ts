@@ -12,6 +12,11 @@ vi.mock('../config.js', () => ({
       momentum_gap_pct: 0.03,
       momentum_max_chase_pct: 0.10,
       require_uptrend_for_momentum: true,
+      orb_enabled: true,
+      orb_range_minutes: 15,
+      orb_volume_mult: 1.3,
+      orb_max_chase_pct: 0.03,
+      orb_min_range_pct: 0.01,
     },
   },
 }));
@@ -20,6 +25,7 @@ import {
   ruleEngineService,
   emptyMessageContext,
   emptyRedCandleSignal,
+  emptyOrbSignal,
 } from '../services/ruleEngineService.js';
 import { StockState } from '../websocket/priceSocket.js';
 
@@ -99,6 +105,150 @@ describe('RuleEngineService suggestedStop clamp', () => {
     );
 
     expect(candidate!.suggestedStop).toBe(1.9);
+  });
+
+  it('routes to orb_breakout when ORB signal matches and uses range low as stop', () => {
+    const stock = makeStock({
+      currentPrice: 2.05,
+      buyZonePrice: 1.95,
+      stopPrice: 1.4,
+      sellZonePrice: 2.6,
+    });
+
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+      {
+        matched: true,
+        rangeHigh: 2.0,
+        rangeLow: 1.9,
+        entry: 2.0,
+        stop: 1.9,
+        rrToSellZone: 6,
+        details: ['ORB-15 breakout above 2.000'],
+      },
+    );
+
+    expect(candidate).not.toBeNull();
+    expect(candidate!.setup).toBe('orb_breakout');
+    expect(candidate!.suggestedStop).toBe(1.9);
+    expect(candidate!.suggestedEntry).toBe(2.05);
+    // Sell zone clears 1R so we prefer it as the target.
+    expect(candidate!.suggestedTarget).toBe(2.6);
+  });
+
+  it('prefers a synthetic 1R target when the sell zone is below 1R on ORB', () => {
+    const stock = makeStock({
+      currentPrice: 2.05,
+      buyZonePrice: 1.95,
+      stopPrice: 1.4,
+      sellZonePrice: 2.1,
+    });
+
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+      {
+        matched: true,
+        rangeHigh: 2.0,
+        rangeLow: 1.9,
+        entry: 2.0,
+        stop: 1.9,
+        rrToSellZone: 1,
+        details: [],
+      },
+    );
+
+    const c = candidate!;
+    const risk = c.suggestedEntry - c.suggestedStop;
+    expect(c.setup).toBe('orb_breakout');
+    // 1R above entry = 2.20, which beats the 2.10 sell zone.
+    expect(c.suggestedTarget).toBeCloseTo(c.suggestedEntry + risk, 6);
+  });
+
+  it('ignores the ORB signal when 30m trend is down', () => {
+    const stock = makeStock({
+      currentPrice: 2.05,
+      buyZonePrice: 1.95,
+      stopPrice: 1.4,
+      sellZonePrice: 2.6,
+      trend30m: 'down',
+    });
+
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+      {
+        matched: true,
+        rangeHigh: 2.0,
+        rangeLow: 1.9,
+        entry: 2.0,
+        stop: 1.9,
+        rrToSellZone: 6,
+        details: [],
+      },
+    );
+
+    expect(candidate?.setup).not.toBe('orb_breakout');
+  });
+
+  it('red-candle theory outranks ORB when both match', () => {
+    const stock = makeStock({
+      currentPrice: 2.05,
+      buyZonePrice: 1.95,
+      stopPrice: 1.4,
+      sellZonePrice: 2.6,
+    });
+
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      {
+        matched: true,
+        candleHigh: 2.0,
+        candleLow: 1.85,
+        entry: 2.0,
+        stop: 1.85,
+        rrToSellZone: 4,
+        details: ['rct matched'],
+      },
+      {
+        matched: true,
+        rangeHigh: 2.0,
+        rangeLow: 1.9,
+        entry: 2.0,
+        stop: 1.9,
+        rrToSellZone: 6,
+        details: ['orb matched'],
+      },
+    );
+
+    expect(candidate!.setup).toBe('red_candle_theory');
+    expect(candidate!.suggestedStop).toBe(1.85);
+  });
+
+  it('emptyOrbSignal default keeps legacy two-arg callers working', () => {
+    const stock = makeStock({
+      currentPrice: 2.0,
+      buyZonePrice: 1.95,
+      stopPrice: 1.9,
+      sellZonePrice: 2.6,
+    });
+
+    // Purposely omit the orbSignal argument — default must not affect routing.
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+    );
+
+    expect(candidate).not.toBeNull();
+    expect(candidate!.setup).not.toBe('orb_breakout');
+    // Sanity: emptyOrbSignal helper is exported and returns unmatched signal.
+    expect(emptyOrbSignal().matched).toBe(false);
   });
 
   it('uses the red-candle signal stop verbatim when RCT matches', () => {

@@ -1,5 +1,7 @@
+import { formatInTimeZone } from 'date-fns-tz';
 import { StockState } from '../websocket/priceSocket.js';
 import { fetchAlpaca1MinBars } from './alpacaBarService.js';
+import { Bar } from './indicatorService.js';
 import { SymbolMessageContext, messageService, SetupTag } from './messageService.js';
 import { config } from '../config.js';
 
@@ -7,7 +9,8 @@ export type CandidateSetup =
   | 'red_candle_theory'
   | 'momentum_continuation'
   | 'pullback_reclaim'
-  | 'crowded_extension_watch';
+  | 'crowded_extension_watch'
+  | 'orb_breakout';
 
 export interface RedCandleSignal {
   matched: boolean;
@@ -24,6 +27,28 @@ export function emptyRedCandleSignal(): RedCandleSignal {
     matched: false,
     candleHigh: null,
     candleLow: null,
+    entry: null,
+    stop: null,
+    rrToSellZone: null,
+    details: [],
+  };
+}
+
+export interface OrbSignal {
+  matched: boolean;
+  rangeHigh: number | null;
+  rangeLow: number | null;
+  entry: number | null;
+  stop: number | null;
+  rrToSellZone: number | null;
+  details: string[];
+}
+
+export function emptyOrbSignal(): OrbSignal {
+  return {
+    matched: false,
+    rangeHigh: null,
+    rangeLow: null,
     entry: null,
     stop: null,
     rrToSellZone: null,
@@ -63,6 +88,109 @@ export interface TradeCandidate {
   suggestedTarget: number;
 }
 
+/**
+ * Pure ORB (Opening Range Breakout) signal computation. Takes a preloaded
+ * 1m bar series and evaluates as of `now`: builds the 9:30–(9:30 +
+ * orb_range_minutes) ET high/low, then looks at the bars after the range
+ * (but at or before `now`) for a close above the range high with volume
+ * confirmation. Returns matched=true when the breakout bar also satisfies
+ * chase-distance and min-range-size guards.
+ *
+ * Factored out so offline tooling (historical replay) can feed in-memory
+ * bars instead of hitting Alpaca for every symbol×minute.
+ */
+export function computeOrbSignal(stock: StockState, bars: Bar[], now: Date): OrbSignal {
+  if (!config.execution.orb_enabled) return emptyOrbSignal();
+  if (bars.length === 0) return emptyOrbSignal();
+
+  const tz = config.market_hours.timezone;
+  const rangeMin = config.execution.orb_range_minutes;
+  const todayEt = formatInTimeZone(now, tz, 'yyyy-MM-dd');
+  const rangeStartMin = 9 * 60 + 30;
+  const rangeEndMin = rangeStartMin + rangeMin;
+  const nowMs = now.getTime();
+
+  const openingBars = bars.filter((bar) => {
+    if (bar.timestamp.getTime() > nowMs) return false;
+    const etDate = formatInTimeZone(bar.timestamp, tz, 'yyyy-MM-dd');
+    if (etDate !== todayEt) return false;
+    const [h, m] = formatInTimeZone(bar.timestamp, tz, 'HH:mm').split(':').map(Number);
+    const minOfDay = h * 60 + m;
+    return minOfDay >= rangeStartMin && minOfDay < rangeEndMin;
+  });
+
+  // Require at least half the range-window bars so a stray data gap in the
+  // first couple minutes doesn't build a range out of a single candle.
+  if (openingBars.length < Math.ceil(rangeMin / 2)) return emptyOrbSignal();
+
+  const rangeHigh = Math.max(...openingBars.map((b) => b.high));
+  const rangeLow = Math.min(...openingBars.map((b) => b.low));
+  const avgRangeVol = openingBars.reduce((sum, b) => sum + b.volume, 0) / openingBars.length;
+
+  const lastOpeningTs = openingBars[openingBars.length - 1].timestamp.getTime();
+  const postBars = bars.filter(
+    (b) => b.timestamp.getTime() > lastOpeningTs && b.timestamp.getTime() <= nowMs,
+  );
+  if (postBars.length === 0) {
+    return {
+      matched: false,
+      rangeHigh,
+      rangeLow,
+      entry: rangeHigh,
+      stop: rangeLow,
+      rrToSellZone: null,
+      details: [],
+    };
+  }
+
+  const latest = postBars[postBars.length - 1];
+  const breakAbove = latest.close > rangeHigh;
+  const volumeConfirm = latest.volume >= avgRangeVol * config.execution.orb_volume_mult;
+  const referencePrice = stock.currentPrice ?? latest.close;
+  const chasePct = rangeHigh > 0 ? (referencePrice - rangeHigh) / rangeHigh : Infinity;
+  const withinChase = chasePct <= config.execution.orb_max_chase_pct;
+  const rangePct = rangeHigh > 0 ? (rangeHigh - rangeLow) / rangeHigh : 0;
+  const rangeValid = rangeHigh > rangeLow && rangePct >= config.execution.orb_min_range_pct;
+
+  const risk = rangeHigh - rangeLow;
+  const reward =
+    stock.sellZonePrice !== null && stock.sellZonePrice !== undefined
+      ? stock.sellZonePrice - rangeHigh
+      : null;
+  const rrToSellZone = reward !== null && risk > 0 ? reward / risk : null;
+
+  const matched = breakAbove && volumeConfirm && withinChase && rangeValid;
+  if (!matched) {
+    return {
+      matched: false,
+      rangeHigh,
+      rangeLow,
+      entry: rangeHigh,
+      stop: rangeLow,
+      rrToSellZone,
+      details: [],
+    };
+  }
+
+  const details = [
+    `ORB-${rangeMin} breakout above ${rangeHigh.toFixed(3)}`,
+    `Suggested stop ${rangeLow.toFixed(3)} (opening range low)`,
+  ];
+  if (typeof rrToSellZone === 'number') {
+    details.push(`Estimated R:R to sell zone ${rrToSellZone.toFixed(2)}x`);
+  }
+
+  return {
+    matched: true,
+    rangeHigh,
+    rangeLow,
+    entry: rangeHigh,
+    stop: rangeLow,
+    rrToSellZone,
+    details,
+  };
+}
+
 class RuleEngineService {
   async getRankedCandidates(stocks: StockState[], limit = 10): Promise<TradeCandidate[]> {
     const evaluated = await Promise.all(
@@ -79,20 +207,24 @@ class RuleEngineService {
   }
 
   private async evaluateStock(stock: StockState, messageContext: SymbolMessageContext): Promise<TradeCandidate | null> {
-    const redCandleSignal = await this.detectRedCandleTheory(stock);
-    return this.scoreFromInputs(stock, messageContext, redCandleSignal);
+    const [redCandleSignal, orbSignal] = await Promise.all([
+      this.detectRedCandleTheory(stock),
+      this.detectOrbBreakout(stock),
+    ]);
+    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal);
   }
 
   /**
    * Pure scoring path. Takes pre-resolved inputs (message context + red-candle
-   * signal) and returns the candidate without touching any I/O — exposed so
-   * offline tooling (historical replay, unit tests) can feed synthesized inputs
-   * through the same scoring logic the live bot uses.
+   * signal + ORB signal) and returns the candidate without touching any I/O —
+   * exposed so offline tooling (historical replay, unit tests) can feed
+   * synthesized inputs through the same scoring logic the live bot uses.
    */
   scoreFromInputs(
     stock: StockState,
     messageContext: SymbolMessageContext,
     redCandleSignal: RedCandleSignal,
+    orbSignal: OrbSignal = emptyOrbSignal(),
   ): TradeCandidate | null {
     const oracleScore = this.scoreOracle(stock);
     const messageScore = Math.min(100, messageContext.convictionScore);
@@ -102,8 +234,11 @@ class RuleEngineService {
     if (redCandleSignal.matched) {
       weighted += 8;
     }
+    if (orbSignal.matched) {
+      weighted += 6;
+    }
 
-    const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal);
+    const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal, orbSignal);
     if (!setup) {
       return null;
     }
@@ -118,16 +253,34 @@ class RuleEngineService {
     if (redCandleSignal.matched) {
       rationale.push(...redCandleSignal.details);
     }
+    if (setup === 'orb_breakout' && orbSignal.matched) {
+      rationale.push(...orbSignal.details);
+    }
 
-    const suggestedEntry = stock.currentPrice ?? stock.buyZonePrice ?? 0;
-    // Clamp at 99% of max_risk_pct so downstream filters (which reject when
-    // riskPct > max_risk_pct) don't trip on floating-point ties at exactly
-    // the cap.
-    const maxRiskStop = suggestedEntry * (1 - config.execution.max_risk_pct * 0.99);
-    const suggestedStop = redCandleSignal.matched && redCandleSignal.stop
-      ? redCandleSignal.stop
-      : Math.max(stock.stopPrice ?? 0, maxRiskStop);
-    const suggestedTarget = stock.sellZonePrice ?? 0;
+    let suggestedEntry = stock.currentPrice ?? stock.buyZonePrice ?? 0;
+    let suggestedStop: number;
+    let suggestedTarget: number;
+
+    if (setup === 'orb_breakout' && orbSignal.entry !== null && orbSignal.stop !== null) {
+      // ORB: entry is the range-high break, stop is the range low. Target
+      // prefers the Oracle sell zone when it clears 1R; otherwise a 1R
+      // synthetic target so downstream filters still see a valid RR.
+      suggestedEntry = stock.currentPrice ?? orbSignal.entry;
+      suggestedStop = orbSignal.stop;
+      const risk = suggestedEntry - suggestedStop;
+      const oneRTarget = suggestedEntry + Math.max(risk, 0);
+      suggestedTarget =
+        stock.sellZonePrice && stock.sellZonePrice > oneRTarget ? stock.sellZonePrice : oneRTarget;
+    } else {
+      // Clamp at 99% of max_risk_pct so downstream filters (which reject when
+      // riskPct > max_risk_pct) don't trip on floating-point ties at exactly
+      // the cap.
+      const maxRiskStop = suggestedEntry * (1 - config.execution.max_risk_pct * 0.99);
+      suggestedStop = redCandleSignal.matched && redCandleSignal.stop
+        ? redCandleSignal.stop
+        : Math.max(stock.stopPrice ?? 0, maxRiskStop);
+      suggestedTarget = stock.sellZonePrice ?? 0;
+    }
 
     return {
       symbol: stock.symbol,
@@ -204,7 +357,8 @@ class RuleEngineService {
   private pickSetup(
     stock: StockState,
     tags: Partial<Record<SetupTag, number>>,
-    redCandleSignal: RedCandleSignal
+    redCandleSignal: RedCandleSignal,
+    orbSignal: OrbSignal,
   ): CandidateSetup | null {
     const hasTag = (tag: SetupTag): boolean => (tags[tag] ?? 0) > 0;
 
@@ -217,6 +371,10 @@ class RuleEngineService {
 
     if (redCandleSignal.matched) {
       return 'red_candle_theory';
+    }
+
+    if (orbSignal.matched && stock.trend30m !== 'down') {
+      return 'orb_breakout';
     }
 
     if (
@@ -289,6 +447,18 @@ class RuleEngineService {
     // momentum_max_chase_pct above. Reject if we're chasing too hard.
     const pctAbove = (current - buy) / buy;
     return pctAbove <= config.execution.momentum_max_chase_pct;
+  }
+
+  private async detectOrbBreakout(stock: StockState): Promise<OrbSignal> {
+    if (!config.execution.orb_enabled) return emptyOrbSignal();
+    try {
+      // 6.5h covers the full RTH session so a late-afternoon poll still sees
+      // the 9:30 open bars.
+      const bars = await fetchAlpaca1MinBars(stock.symbol, 390);
+      return computeOrbSignal(stock, bars, new Date());
+    } catch {
+      return emptyOrbSignal();
+    }
   }
 
   private async detectRedCandleTheory(stock: StockState): Promise<RedCandleSignal> {

@@ -7,7 +7,10 @@ import {
   ruleEngineService,
   emptyMessageContext,
   emptyRedCandleSignal,
+  emptyOrbSignal,
+  computeOrbSignal,
 } from '../services/ruleEngineService.js';
+import type { Bar } from '../services/indicatorService.js';
 import type { CycleRecord, RecordedItem, RecordedDecision } from '../services/recordingService.js';
 
 const LEVELS_DIR = 'F:/oracle_data/levels';
@@ -172,6 +175,7 @@ async function main(): Promise<void> {
 
   const barsByMs: Record<string, Map<number, CachedBar>> = {};
   const barSeries: Record<string, CachedBar[]> = {};
+  const barSeriesForOrb: Record<string, Bar[]> = {};
   for (const sym of symbols) {
     const raw = barsRaw[sym] ?? [];
     const cached = raw.map((b) => ({
@@ -185,6 +189,14 @@ async function main(): Promise<void> {
     cached.sort((a, b) => a.ts - b.ts);
     barSeries[sym] = cached;
     barsByMs[sym] = indexBars(raw);
+    barSeriesForOrb[sym] = cached.map((b) => ({
+      timestamp: new Date(b.ts),
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+      volume: b.volume,
+    }));
   }
 
   const premarketVolume: Record<string, number> = {};
@@ -254,10 +266,14 @@ async function main(): Promise<void> {
 
       items.push(toRecordedItem(stock, lv.floatMillions));
 
+      const orbSignal = tMs >= rthStartMs
+        ? computeOrbSignal(stock, barSeriesForOrb[sym], new Date(tMs))
+        : emptyOrbSignal();
       const candidate = ruleEngineService.scoreFromInputs(
         stock,
         emptyMessageContext(sym),
         emptyRedCandleSignal(),
+        orbSignal,
       );
       if (candidate) {
         decisions.push({
@@ -266,6 +282,9 @@ async function main(): Promise<void> {
           setup: candidate.setup,
           score: candidate.score,
           rationale: candidate.rationale,
+          suggestedEntry: candidate.suggestedEntry,
+          suggestedStop: candidate.suggestedStop,
+          suggestedTarget: candidate.suggestedTarget,
         });
         candidateCount++;
         setupCounts[candidate.setup] = (setupCounts[candidate.setup] ?? 0) + 1;
