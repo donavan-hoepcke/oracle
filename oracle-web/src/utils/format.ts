@@ -55,6 +55,8 @@ export function setupLabel(setup: string): string {
       return 'Pullback Reclaim';
     case 'crowded_extension_watch':
       return 'Crowded Extension Watch';
+    case 'orb_breakout':
+      return 'Opening Range Breakout';
     default:
       return setup;
   }
