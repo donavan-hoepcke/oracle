@@ -34,8 +34,11 @@ export interface AlpacaOrder {
   id: string;
   symbol: string;
   status: string;
+  side: 'buy' | 'sell';
   filledAvgPrice: number | null;
   filledQty: number | null;
+  filledAt: string | null;
+  submittedAt: string | null;
 }
 
 export interface SubmitOrderParams {
@@ -142,8 +145,11 @@ class AlpacaOrderService {
       id: data.id as string,
       symbol: data.symbol as string,
       status: data.status as string,
+      side: data.side === 'sell' ? 'sell' : 'buy',
       filledAvgPrice: data.filled_avg_price ? parseFloat(data.filled_avg_price as string) : null,
       filledQty: data.filled_qty ? parseFloat(data.filled_qty as string) : null,
+      filledAt: (data.filled_at as string | null) ?? null,
+      submittedAt: (data.submitted_at as string | null) ?? null,
     };
   }
 }
