@@ -208,6 +208,46 @@ export interface ScannerSnapshot {
   marketStatus: MarketStatus;
 }
 
+export type SignalKind = 'candidate' | 'moderator_primary' | 'moderator_backup' | 'community_hot';
+
+export interface SignalInboxItem {
+  id: string;
+  kind: SignalKind;
+  symbol: string;
+  headline: string;
+  priority: number;
+  occurredAt: string | null;
+  details: {
+    score?: number;
+    setup?: CandidateSetup;
+    suggestedEntry?: number;
+    suggestedStop?: number;
+    suggestedTarget?: number;
+    rationale?: string[];
+    signal?: number | null;
+    riskZone?: number | null;
+    target?: string | null;
+    postTitle?: string;
+    author?: string;
+    note?: string | null;
+    mentionCount?: number;
+    convictionScore?: number;
+    topTags?: SetupTag[];
+  };
+}
+
+export interface SignalsSnapshot {
+  items: SignalInboxItem[];
+  asOf: string;
+  counts: {
+    total: number;
+    candidate: number;
+    moderator_primary: number;
+    moderator_backup: number;
+    community_hot: number;
+  };
+}
+
 export type ModeratorPostKind =
   | 'alert'
   | 'backups'
