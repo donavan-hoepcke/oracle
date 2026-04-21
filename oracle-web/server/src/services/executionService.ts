@@ -32,6 +32,7 @@ export interface TradeLedgerEntry {
   exitPrice: number;
   exitTime: Date;
   shares: number;
+  riskPerShare: number;
   pnl: number;
   pnlPct: number;
   rMultiple: number;
@@ -171,6 +172,27 @@ export class ExecutionService {
     return this.ledger.reduce((sum, t) => sum + t.pnl, 0);
   }
 
+  /**
+   * Rewrite ledger entries in place against Alpaca's actual sell fills since
+   * startIso. Corrects EOD/flatten exits that were recorded at entryPrice
+   * (pnl = 0) and any other trade whose recorded exit diverged from the
+   * real fill. Best effort: on fetch failure the ledger is left unchanged.
+   */
+  async reconcileLedgerFromAlpaca(startIso: string): Promise<number> {
+    if (this.ledger.length === 0) return 0;
+    const { applyFillsToLedger } = await import('./tradeReconciliationService.js');
+    let orders;
+    try {
+      orders = await alpacaOrderService.getOrdersSince(startIso, 'closed');
+    } catch (err) {
+      console.warn('reconcileLedgerFromAlpaca fetch failed:', err instanceof Error ? err.message : err);
+      return 0;
+    }
+    const { reconciled, changed } = applyFillsToLedger(this.ledger, orders);
+    if (changed > 0) this.ledger = reconciled;
+    return changed;
+  }
+
   isEnabled(): boolean {
     return this.enabled;
   }
@@ -300,6 +322,18 @@ export class ExecutionService {
       // best effort
     }
     this.activeTrades = [];
+
+    // The exitTrade calls above stamped placeholder exit prices equal to
+    // entryPrice. Alpaca needs a moment to fill the closing market orders;
+    // then we rewrite the ledger rows with the real fill prices.
+    await new Promise((r) => setTimeout(r, 2000));
+    const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    try {
+      const changed = await this.reconcileLedgerFromAlpaca(start);
+      if (changed > 0) console.log(`Reconciled ${changed} flatten exit(s) from Alpaca fills`);
+    } catch (err) {
+      console.warn('Post-flatten reconciliation failed:', err instanceof Error ? err.message : err);
+    }
   }
 
   private async buildAccountState(): Promise<AccountState> {
@@ -550,6 +584,7 @@ export class ExecutionService {
       exitPrice,
       exitTime: new Date(),
       shares: trade.shares,
+      riskPerShare: trade.riskPerShare,
       pnl,
       pnlPct,
       rMultiple,

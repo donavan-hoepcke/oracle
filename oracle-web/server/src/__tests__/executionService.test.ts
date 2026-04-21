@@ -448,6 +448,7 @@ describe('ExecutionService', () => {
         exitPrice: 1 + pnl,
         exitTime: entryTime as unknown as Date,
         shares: 100,
+        riskPerShare: 1,
         pnl,
         pnlPct: pnl * 100,
         rMultiple: pnl,

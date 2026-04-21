@@ -1,21 +1,28 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { AlpacaOrder } from '../services/alpacaOrderService.js';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'oracle-journal-history-'));
 
-const { mockConfig } = vi.hoisted(() => ({
+const { mockConfig, getOrdersSinceMock } = vi.hoisted(() => ({
   mockConfig: {
     recording: { enabled: true, dir: '' },
     market_hours: { timezone: 'America/New_York' },
+    execution: { paper: true },
   },
+  getOrdersSinceMock: vi.fn<() => Promise<unknown[]>>(async () => []),
 }));
 mockConfig.recording.dir = tempDir;
 
 vi.mock('../config.js', () => ({ config: mockConfig }));
+vi.mock('../services/alpacaOrderService.js', () => ({
+  alpacaOrderService: { getOrdersSince: getOrdersSinceMock },
+}));
 
 import { JournalHistoryService } from '../services/journalHistoryService.js';
+import { tradeReconciliationService } from '../services/tradeReconciliationService.js';
 
 function cycle(ts: string, tradingDay: string, closed: Array<{ symbol: string; pnl: number }>) {
   return {
@@ -34,6 +41,7 @@ function cycle(ts: string, tradingDay: string, closed: Array<{ symbol: string; p
       exitPrice: 10 + t.pnl,
       exitTime: ts,
       shares: 1,
+      riskPerShare: 1,
       pnl: t.pnl,
       pnlPct: t.pnl * 10,
       rMultiple: t.pnl,
@@ -47,7 +55,13 @@ function cycle(ts: string, tradingDay: string, closed: Array<{ symbol: string; p
 describe('JournalHistoryService', () => {
   const svc = new JournalHistoryService();
 
-  it('returns the last cycle of the day as closed trades', () => {
+  beforeEach(() => {
+    getOrdersSinceMock.mockReset();
+    getOrdersSinceMock.mockResolvedValue([]);
+    tradeReconciliationService.invalidate();
+  });
+
+  it('returns the last cycle of the day as closed trades', async () => {
     const day = '2026-04-15';
     writeFileSync(
       join(tempDir, `${day}.jsonl`),
@@ -61,19 +75,20 @@ describe('JournalHistoryService', () => {
       ].join('\n'),
     );
 
-    const result = svc.getDay(day);
+    const result = await svc.getDay(day);
     expect(result).not.toBeNull();
     expect(result!.closed).toHaveLength(2);
     expect(result!.closed.map((t) => t.symbol)).toEqual(['AAA', 'BBB']);
     expect(result!.lastCycleAt).toBe('2026-04-15T19:59:00Z');
+    expect(result!.reconciled).toBe(true);
   });
 
-  it('returns null when the date has no recording file', () => {
-    expect(svc.getDay('2020-01-01')).toBeNull();
+  it('returns null when the date has no recording file', async () => {
+    expect(await svc.getDay('2020-01-01')).toBeNull();
   });
 
-  it('rejects malformed dates', () => {
-    expect(svc.getDay('not-a-date')).toBeNull();
+  it('rejects malformed dates', async () => {
+    expect(await svc.getDay('not-a-date')).toBeNull();
   });
 
   it('lists recorded days plus today, newest first', () => {
@@ -85,5 +100,32 @@ describe('JournalHistoryService', () => {
     for (let i = 1; i < days.length; i++) {
       expect(days[i - 1].localeCompare(days[i])).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it('rewrites placeholder exit prices with real Alpaca fills', async () => {
+    const day = '2026-04-16';
+    writeFileSync(
+      join(tempDir, `${day}.jsonl`),
+      JSON.stringify(cycle('2026-04-16T20:00:00Z', day, [{ symbol: 'CCC', pnl: 0 }])) + '\n',
+    );
+
+    const fill: AlpacaOrder = {
+      id: 'order-1',
+      symbol: 'CCC',
+      status: 'filled',
+      side: 'sell',
+      filledAvgPrice: 12,
+      filledQty: 1,
+      filledAt: '2026-04-16T20:00:30Z',
+      submittedAt: '2026-04-16T20:00:29Z',
+    };
+    getOrdersSinceMock.mockResolvedValue([fill]);
+
+    const result = await svc.getDay(day);
+    expect(result).not.toBeNull();
+    expect(result!.closed[0].exitPrice).toBe(12);
+    expect(result!.closed[0].pnl).toBe(2);
+    expect(result!.closed[0].exitDetail).toContain('Reconciled from Alpaca');
+    expect(result!.reconciled).toBe(true);
   });
 });

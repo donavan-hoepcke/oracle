@@ -4,11 +4,13 @@ import { formatInTimeZone } from 'date-fns-tz';
 import { config } from '../config.js';
 import { CycleRecord } from './recordingService.js';
 import { TradeLedgerEntry } from './executionService.js';
+import { tradeReconciliationService } from './tradeReconciliationService.js';
 
 export interface HistoricalJournalDay {
   date: string;
   closed: TradeLedgerEntry[];
   lastCycleAt: string | null;
+  reconciled: boolean;
 }
 
 function readLastNonEmptyLine(filePath: string): string | null {
@@ -35,17 +37,20 @@ export class JournalHistoryService {
     return [...days].sort((a, b) => b.localeCompare(a));
   }
 
-  getDay(date: string): HistoricalJournalDay | null {
+  async getDay(date: string): Promise<HistoricalJournalDay | null> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
     const filePath = resolve(config.recording.dir, `${date}.jsonl`);
     if (!existsSync(filePath)) return null;
     const lastLine = readLastNonEmptyLine(filePath);
-    if (!lastLine) return { date, closed: [], lastCycleAt: null };
+    if (!lastLine) return { date, closed: [], lastCycleAt: null, reconciled: false };
     const cycle: CycleRecord = JSON.parse(lastLine);
+
+    const result = await tradeReconciliationService.reconcileDay(date, cycle.closedTrades);
     return {
       date,
-      closed: cycle.closedTrades,
+      closed: result.trades,
       lastCycleAt: cycle.ts,
+      reconciled: result.reconciled,
     };
   }
 }

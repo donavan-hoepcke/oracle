@@ -433,18 +433,22 @@ app.get('/api/journal/days', (_req, res) => {
   }
 });
 
-app.get('/api/journal/history/:date', (req, res) => {
+app.get('/api/journal/history/:date', async (req, res) => {
   const date = typeof req.params.date === 'string' ? req.params.date : '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: 'Invalid date' });
     return;
   }
-  const day = journalHistoryService.getDay(date);
-  if (!day) {
-    res.status(404).json({ error: `No recording for ${date}` });
-    return;
+  try {
+    const day = await journalHistoryService.getDay(date);
+    if (!day) {
+      res.status(404).json({ error: `No recording for ${date}` });
+      return;
+    }
+    res.json(day);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load journal day' });
   }
-  res.json(day);
 });
 
 app.get('/api/execution/status', async (_req, res) => {
@@ -562,19 +566,29 @@ if (existsSync(distPath)) {
 priceSocketServer.initialize(server);
 
 // Rehydrate today's closed-trade ledger from the JSONL recording so a
-// server restart mid-session doesn't lose the realized trade log.
-try {
-  const [today] = journalHistoryService.listDays();
-  const day = today ? journalHistoryService.getDay(today) : null;
-  if (day && day.closed.length > 0) {
-    const added = executionService.hydrateLedger(day.closed);
-    if (added > 0) {
-      console.log(`Hydrated ${added} closed trade(s) for ${today} from recording`);
+// server restart mid-session doesn't lose the realized trade log, then
+// reconcile placeholder EOD/flatten exits against Alpaca's real sell fills.
+(async () => {
+  try {
+    const [today] = journalHistoryService.listDays();
+    if (!today) return;
+    const day = await journalHistoryService.getDay(today);
+    if (day && day.closed.length > 0) {
+      const added = executionService.hydrateLedger(day.closed);
+      if (added > 0) {
+        console.log(`Hydrated ${added} closed trade(s) for ${today} from recording`);
+      }
     }
+    const dayStart = new Date();
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const changed = await executionService.reconcileLedgerFromAlpaca(dayStart.toISOString());
+    if (changed > 0) {
+      console.log(`Reconciled ${changed} ledger exit(s) from Alpaca fills`);
+    }
+  } catch (err) {
+    console.warn('Ledger hydration failed:', err instanceof Error ? err.message : err);
   }
-} catch (err) {
-  console.warn('Ledger hydration failed:', err instanceof Error ? err.message : err);
-}
+})();
 
 // Start FloatMAP polling (no-op when disabled in config).
 floatMapService.start().catch((err) => {
