@@ -13,6 +13,7 @@ import { executionService } from './services/executionService.js';
 import { backtestRunner } from './services/backtestRunner.js';
 import { synthesizeDay } from './services/recordingSynthService.js';
 import { floatMapService } from './services/floatMapService.js';
+import { moderatorAlertService } from './services/moderatorAlertService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -167,6 +168,10 @@ app.get('/api/messages', (req, res) => {
 
 app.get('/api/floatmap', (_req, res) => {
   res.json(floatMapService.getSnapshot());
+});
+
+app.get('/api/moderator-alerts', (_req, res) => {
+  res.json(moderatorAlertService.getSnapshot());
 });
 
 app.get('/api/trade-candidates', async (_req, res) => {
@@ -472,6 +477,11 @@ floatMapService.start().catch((err) => {
   console.warn('floatMap start failed:', err instanceof Error ? err.message : err);
 });
 
+// Start Daily Market Profits moderator-alert polling (no-op when disabled).
+moderatorAlertService.start().catch((err) => {
+  console.warn('moderatorAlerts start failed:', err instanceof Error ? err.message : err);
+});
+
 // Start server
 server.listen(config.port, () => {
   console.log(`Oracle server running on http://localhost:${config.port}`);
@@ -483,6 +493,7 @@ process.on('SIGINT', () => {
   console.log('\nShutting down...');
   priceSocketServer.shutdown();
   floatMapService.stop().catch(() => {});
+  moderatorAlertService.stop().catch(() => {});
   server.close(() => {
     process.exit(0);
   });

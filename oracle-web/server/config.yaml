@@ -45,6 +45,11 @@ bot:
     poll_interval_sec: 120
     frame_url_contains: "amplifyapp.com"
     hydration_wait_ms: 8000
+  moderatorAlerts:
+    enabled: true
+    url: "https://university.stockstotrade.com/room/daily-market-profits"
+    poll_interval_sec: 180
+    hydration_wait_ms: 5000
 execution:
   enabled: true
   paper: true

@@ -68,6 +68,14 @@ const configSchema = z.object({
           hydration_wait_ms: z.number().int().nonnegative().default(8_000),
         })
         .default({}),
+      moderatorAlerts: z
+        .object({
+          enabled: z.boolean().default(false),
+          url: z.string().default('https://university.stockstotrade.com/room/daily-market-profits'),
+          poll_interval_sec: z.number().positive().default(180),
+          hydration_wait_ms: z.number().int().nonnegative().default(5_000),
+        })
+        .default({}),
     })
     .default({}),
   execution: z
