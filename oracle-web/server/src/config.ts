@@ -59,6 +59,15 @@ const configSchema = z.object({
           oracle_schema_strict: z.boolean().default(false),
         })
         .default({}),
+      floatmap: z
+        .object({
+          enabled: z.boolean().default(false),
+          url: z.string().default('https://university.stockstotrade.com/page/Oracle-FloatMAP'),
+          poll_interval_sec: z.number().positive().default(120),
+          frame_url_contains: z.string().default('amplifyapp.com'),
+          hydration_wait_ms: z.number().int().nonnegative().default(8_000),
+        })
+        .default({}),
     })
     .default({}),
   execution: z
