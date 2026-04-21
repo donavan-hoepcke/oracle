@@ -1,12 +1,12 @@
 import { useWebSocket } from './hooks/useWebSocket';
 import { useNotifications } from './hooks/useNotifications';
-import { useTradeCandidates } from './hooks/useTradeCandidates';
+import { useSignals } from './hooks/useSignals';
 import { useJournal } from './hooks/useJournal';
 import { useScanner } from './hooks/useScanner';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { StatusBar } from './components/StatusBar';
 import { ScannerPage } from './components/ScannerPage';
-import { TradeIdeasPage } from './components/TradeIdeasPage';
+import { SignalsPage } from './components/SignalsPage';
 import { JournalPage } from './components/JournalPage';
 import { BacktestPage } from './components/BacktestPage';
 import { SymbolDetailPage } from './components/SymbolDetailPage';
@@ -21,7 +21,12 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
 function App() {
   const { stocks, marketStatus, botStatus, isConnected, lastUpdate, alerts, clearAlert } =
     useWebSocket();
-  const { candidates, asOf, isLoading, error, refresh } = useTradeCandidates(20);
+  const {
+    snapshot: signalsSnapshot,
+    isLoading: signalsLoading,
+    error: signalsError,
+    refresh: signalsRefresh,
+  } = useSignals();
   const {
     snapshot: journalSnapshot,
     isLoading: journalLoading,
@@ -96,10 +101,10 @@ function App() {
               Dashboard
             </NavLink>
             <NavLink
-              to="/ideas"
+              to="/signals"
               className={navLinkClass}
             >
-              Ideas
+              Signals
             </NavLink>
             <NavLink
               to="/journal"
@@ -218,17 +223,17 @@ function App() {
             }
           />
           <Route
-            path="/ideas"
+            path="/signals"
             element={
-              <TradeIdeasPage
-                candidates={candidates}
-                asOf={asOf}
-                isLoading={isLoading}
-                error={error}
-                onRefresh={refresh}
+              <SignalsPage
+                snapshot={signalsSnapshot}
+                isLoading={signalsLoading}
+                error={signalsError}
+                onRefresh={signalsRefresh}
               />
             }
           />
+          <Route path="/ideas" element={<Navigate to="/signals" replace />} />
           <Route
             path="/journal"
             element={

@@ -15,6 +15,7 @@ import { synthesizeDay } from './services/recordingSynthService.js';
 import { floatMapService } from './services/floatMapService.js';
 import { moderatorAlertService } from './services/moderatorAlertService.js';
 import { buildSymbolDetail } from './services/symbolDetailService.js';
+import { buildSignalsInbox } from './services/signalsService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -193,6 +194,31 @@ app.get('/api/trade-candidates', async (_req, res) => {
     res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to compute trade candidates',
     });
+  }
+});
+
+app.get('/api/signals', async (_req, res) => {
+  try {
+    const stocks = priceSocketServer.getStockStates();
+    const candidates = await ruleEngineService.getRankedCandidates(stocks, 50);
+    const items = buildSignalsInbox({
+      candidates,
+      moderator: moderatorAlertService.getSnapshot(),
+      recentMessages: messageService.getRecent(1000),
+    });
+    res.json({
+      items,
+      asOf: new Date().toISOString(),
+      counts: {
+        total: items.length,
+        candidate: items.filter((i) => i.kind === 'candidate').length,
+        moderator_primary: items.filter((i) => i.kind === 'moderator_primary').length,
+        moderator_backup: items.filter((i) => i.kind === 'moderator_backup').length,
+        community_hot: items.filter((i) => i.kind === 'community_hot').length,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build signals' });
   }
 });
 
