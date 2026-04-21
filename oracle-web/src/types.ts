@@ -23,6 +23,14 @@ export interface StockState {
   boxTop: number | null;
   boxBottom: number | null;
   signalTimestamp: string | null;
+  stopPrice?: number | null;
+  buyZonePrice?: number | null;
+  sellZonePrice?: number | null;
+  lastPrice?: number | null;
+  premarketVolume?: number | null;
+  relativeVolume?: number | null;
+  floatMillions?: number | null;
+  profitDeltaPct?: number | null;
 }
 
 export interface MarketStatus {
@@ -53,9 +61,10 @@ export type SetupTag =
 export interface SymbolMessageContext {
   symbol: string;
   mentionCount: number;
+  lastMentionAt: string | null;
   convictionScore: number;
   tagCounts: Partial<Record<SetupTag, number>>;
-  latestMessages: Array<{
+  latestMessages?: Array<{
     id: string;
     timestamp: string;
     source: string;
@@ -91,7 +100,7 @@ export interface TradeCandidate {
   };
 }
 
-export type TrailingState = 'initial' | 'breakeven' | 'trailing';
+export type TrailingState = 'initial' | 'mfe_lock' | 'breakeven' | 'trailing';
 
 export type ExitReason = 'stop' | 'trailing_stop' | 'target' | 'eod' | 'circuit_breaker';
 
@@ -197,6 +206,112 @@ export interface ScannerSnapshot {
   rows: ScannerRow[];
   asOf: string;
   marketStatus: MarketStatus;
+}
+
+export type ModeratorPostKind =
+  | 'alert'
+  | 'backups'
+  | 'pre_market_prep'
+  | 'weekend_resources'
+  | 'comment'
+  | 'announcement'
+  | 'other';
+
+export interface ModeratorSignal {
+  symbol: string;
+  signal: number | null;
+  riskZone: number | null;
+  target: string | null;
+  targetFloor: number | null;
+}
+
+export interface ModeratorBackupMention {
+  symbol: string;
+  price: number | null;
+  note: string | null;
+  postTitle: string;
+  postedAt: string | null;
+  author: string;
+}
+
+export interface ModeratorMention {
+  title: string;
+  kind: ModeratorPostKind;
+  author: string;
+  postedAt: string | null;
+  role: 'primary' | 'backup' | 'mention';
+  excerpt: string;
+}
+
+export interface FloatMapEntry {
+  symbol: string;
+  rotation: number | null;
+  last: number | null;
+  floatMillions: number | null;
+  nextOracleSupport: number | null;
+  nextOracleResistance: number | null;
+}
+
+export interface SymbolDetail {
+  symbol: string;
+  asOf: string;
+  inWatchlist: boolean;
+  stockState: StockState | null;
+  activeTrade:
+    | (ActiveTrade & {
+        orderId: string;
+        maxFavorableR: number;
+        currentPrice: number | null;
+        unrealizedPl: number | null;
+        rMultiple: number | null;
+      })
+    | null;
+  position: {
+    symbol: string;
+    qty: number;
+    avgEntryPrice: number;
+    currentPrice: number;
+    marketValue: number;
+    unrealizedPl: number;
+  } | null;
+  candidate:
+    | (TradeCandidate & {
+        suggestedEntry: number;
+        suggestedStop: number;
+        suggestedTarget: number;
+      })
+    | null;
+  rejection: {
+    symbol: string;
+    reason: string;
+    score: number;
+    setup: CandidateSetup;
+    suggestedEntry: number;
+    suggestedStop: number;
+    suggestedTarget: number;
+    timestamp: string;
+  } | null;
+  cooldownExpiresAt: string | null;
+  washSaleRisk: boolean;
+  floatMap: FloatMapEntry | null;
+  moderator: {
+    primary: ModeratorSignal | null;
+    primaryPost: { title: string; postedAt: string | null; author: string } | null;
+    backups: ModeratorBackupMention[];
+    mentions: ModeratorMention[];
+  };
+  messageContext: SymbolMessageContext;
+  recentMessages: Array<{
+    id: string;
+    text: string;
+    channel: string;
+    author: string;
+    timestamp: string;
+    symbols: string[];
+    tags: SetupTag[];
+    confidence: number;
+  }>;
+  closedTrades: ClosedTrade[];
 }
 
 export type BacktestExitReason = 'stop' | 'trailing_stop' | 'target' | 'eod';

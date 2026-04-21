@@ -14,6 +14,7 @@ import { backtestRunner } from './services/backtestRunner.js';
 import { synthesizeDay } from './services/recordingSynthService.js';
 import { floatMapService } from './services/floatMapService.js';
 import { moderatorAlertService } from './services/moderatorAlertService.js';
+import { buildSymbolDetail } from './services/symbolDetailService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -311,6 +312,45 @@ app.get('/api/scanner', async (_req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build scanner' });
+  }
+});
+
+app.get('/api/symbol/:ticker', async (req, res) => {
+  const rawTicker = typeof req.params.ticker === 'string' ? req.params.ticker.trim() : '';
+  if (!/^[A-Za-z][A-Za-z0-9.-]{0,9}$/.test(rawTicker)) {
+    res.status(400).json({ error: 'Invalid ticker' });
+    return;
+  }
+  const symbol = rawTicker.toUpperCase();
+  try {
+    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+    const stocks = priceSocketServer.getStockStates();
+    const positionsPromise = alpacaOrderService.getPositions().catch(() => []);
+    const candidates = await ruleEngineService.getRankedCandidates(stocks, 50);
+    const positions = await positionsPromise;
+
+    const detail = buildSymbolDetail({
+      symbol,
+      stocks,
+      candidates,
+      activeTrades: executionService.getActiveTrades(),
+      rejections: executionService.getRejections(),
+      cooldowns: executionService.getCooldownSymbols(),
+      washSaleSymbols: executionService.getWashSaleSymbols(),
+      floatMap: floatMapService.getSnapshot(),
+      moderator: moderatorAlertService.getSnapshot(),
+      messageContext: messageService.getSymbolContext(symbol),
+      recentMessages: messageService
+        .getRecent(500)
+        .filter((m) => m.symbols.includes(symbol))
+        .slice(0, 50),
+      ledger: executionService.getLedger(),
+      positions,
+    });
+
+    res.json(detail);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build symbol detail' });
   }
 });
 

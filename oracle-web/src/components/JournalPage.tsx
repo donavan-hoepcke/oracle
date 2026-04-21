@@ -61,6 +61,7 @@ function exitReasonBadge(r: ClosedTrade['exitReason']): string {
 function trailingBadge(s: ActiveTrade['trailingState']): string {
   switch (s) {
     case 'initial': return 'bg-gray-100 text-gray-700';
+    case 'mfe_lock': return 'bg-purple-100 text-purple-800';
     case 'breakeven': return 'bg-blue-100 text-blue-800';
     case 'trailing': return 'bg-green-100 text-green-800';
   }

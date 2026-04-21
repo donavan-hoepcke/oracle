@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { ScannerRow, ScannerSnapshot, ScannerStatus } from '../types';
 import { ZoneBar } from './ZoneBar';
 
@@ -88,6 +89,16 @@ const ALL_STATUSES: ScannerStatus[] = ['traded', 'rejected', 'candidate', 'setup
 export function ScannerPage({ snapshot, isLoading, error, onRefresh }: ScannerPageProps) {
   const [hiddenStatuses, setHiddenStatuses] = useState<Set<ScannerStatus>>(new Set(['dead']));
   const [sortKey, setSortKey] = useState<'default' | 'pctChange' | 'pctToBuy'>('default');
+  const [lookup, setLookup] = useState('');
+  const navigate = useNavigate();
+
+  const submitLookup = (e: FormEvent) => {
+    e.preventDefault();
+    const sym = lookup.trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(sym)) return;
+    navigate(`/symbol/${sym}`);
+    setLookup('');
+  };
 
   const toggleStatus = (s: ScannerStatus) => {
     setHiddenStatuses((prev) => {
@@ -171,6 +182,22 @@ export function ScannerPage({ snapshot, isLoading, error, onRefresh }: ScannerPa
           );
         })}
         <div className="ml-auto flex items-center gap-2">
+          <form onSubmit={submitLookup} className="flex items-center gap-1">
+            <input
+              type="text"
+              placeholder="Lookup ticker"
+              value={lookup}
+              onChange={(e) => setLookup(e.target.value)}
+              className="border border-gray-300 rounded px-2 py-0.5 text-xs uppercase w-28"
+              maxLength={10}
+            />
+            <button
+              type="submit"
+              className="text-xs px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700"
+            >
+              Go
+            </button>
+          </form>
           <span className="text-xs text-gray-500">Sort</span>
           <select
             value={sortKey}
@@ -207,7 +234,12 @@ export function ScannerPage({ snapshot, isLoading, error, onRefresh }: ScannerPa
                 return (
                   <tr key={r.symbol} className="border-t border-gray-100 hover:bg-gray-50">
                     <td className="px-3 py-2 font-semibold">
-                      {r.symbol}
+                      <Link
+                        to={`/symbol/${r.symbol}`}
+                        className="text-blue-700 hover:underline"
+                      >
+                        {r.symbol}
+                      </Link>
                       {r.washSaleRisk && (
                         <span
                           className="ml-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800"

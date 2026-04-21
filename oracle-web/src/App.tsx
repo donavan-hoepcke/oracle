@@ -9,6 +9,7 @@ import { ScannerPage } from './components/ScannerPage';
 import { TradeIdeasPage } from './components/TradeIdeasPage';
 import { JournalPage } from './components/JournalPage';
 import { BacktestPage } from './components/BacktestPage';
+import { SymbolDetailPage } from './components/SymbolDetailPage';
 import { PremarketSyncBanner } from './components/PremarketSyncBanner';
 
 function navLinkClass({ isActive }: { isActive: boolean }): string {
@@ -240,6 +241,7 @@ function App() {
             }
           />
           <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/symbol/:ticker" element={<SymbolDetailPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
