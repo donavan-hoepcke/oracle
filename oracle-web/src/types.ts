@@ -137,6 +137,12 @@ export interface ClosedTrade {
   rationale: string[];
 }
 
+export interface JournalHistoryDay {
+  date: string;
+  closed: ClosedTrade[];
+  lastCycleAt: string | null;
+}
+
 export interface JournalSnapshot {
   account: {
     equity: number;

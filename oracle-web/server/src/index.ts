@@ -16,6 +16,7 @@ import { floatMapService } from './services/floatMapService.js';
 import { moderatorAlertService } from './services/moderatorAlertService.js';
 import { buildSymbolDetail } from './services/symbolDetailService.js';
 import { buildSignalsInbox } from './services/signalsService.js';
+import { journalHistoryService } from './services/journalHistoryService.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -422,6 +423,28 @@ app.get('/api/execution/journal', async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build journal' });
   }
+});
+
+app.get('/api/journal/days', (_req, res) => {
+  try {
+    res.json({ days: journalHistoryService.listDays() });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list journal days' });
+  }
+});
+
+app.get('/api/journal/history/:date', (req, res) => {
+  const date = typeof req.params.date === 'string' ? req.params.date : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: 'Invalid date' });
+    return;
+  }
+  const day = journalHistoryService.getDay(date);
+  if (!day) {
+    res.status(404).json({ error: `No recording for ${date}` });
+    return;
+  }
+  res.json(day);
 });
 
 app.get('/api/execution/status', async (_req, res) => {
