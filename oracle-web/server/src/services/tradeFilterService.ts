@@ -66,19 +66,22 @@ class TradeFilterService {
     const stop = candidate.suggestedStop;
     const riskPerShare = Math.round((entry - stop) * 1e8) / 1e8;
 
-    if (riskPerShare <= 0) {
+    if (riskPerShare <= 0 || entry <= 0) {
       return { shares: 0, costBasis: 0 };
     }
 
-    const shares = Math.floor(exec.risk_per_trade / riskPerShare);
-    const costBasis = shares * entry;
+    const riskSizedShares = Math.floor(exec.risk_per_trade / riskPerShare);
+    const maxDeployable = Math.max(0, account.cash * exec.max_capital_pct - account.deployedCapital);
+    const capitalCapShares = Math.floor(maxDeployable / entry);
+    const tradeCostCapShares = exec.max_trade_cost > 0
+      ? Math.floor(exec.max_trade_cost / entry)
+      : Number.POSITIVE_INFINITY;
 
-    const maxDeployable = account.cash * exec.max_capital_pct - account.deployedCapital;
-    if (costBasis > maxDeployable || shares < 1) {
+    const shares = Math.min(riskSizedShares, capitalCapShares, tradeCostCapShares);
+    if (shares < 1) {
       return { shares: 0, costBasis: 0 };
     }
-
-    return { shares, costBasis };
+    return { shares, costBasis: shares * entry };
   }
 }
 
