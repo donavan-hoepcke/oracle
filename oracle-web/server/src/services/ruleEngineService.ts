@@ -56,6 +56,32 @@ export function emptyOrbSignal(): OrbSignal {
   };
 }
 
+export interface MomentumSignal {
+  matched: boolean;
+  pullbackHigh: number | null;
+  pullbackLow: number | null;
+  hod: number | null;
+  sessionOpen: number | null;
+  entry: number | null;
+  stop: number | null;
+  rrToSellZone: number | null;
+  details: string[];
+}
+
+export function emptyMomentumSignal(): MomentumSignal {
+  return {
+    matched: false,
+    pullbackHigh: null,
+    pullbackLow: null,
+    hod: null,
+    sessionOpen: null,
+    entry: null,
+    stop: null,
+    rrToSellZone: null,
+    details: [],
+  };
+}
+
 export function emptyMessageContext(symbol: string): SymbolMessageContext {
   return {
     symbol,
@@ -191,6 +217,117 @@ export function computeOrbSignal(stock: StockState, bars: Bar[], now: Date): Orb
   };
 }
 
+/**
+ * Pure momentum-continuation detector. Mirrors ORB's shape but fires later in
+ * the session. Looks for: (1) a meaningful up-move from session open to a high
+ * of day, (2) a pullback of ≥ momentum_min_pullback_pct off that HOD whose low
+ * stays above the session open (higher-low structure), and (3) the latest bar
+ * closing back above the pullback ceiling with volume ≥ the pullback-window
+ * average × momentum_volume_mult. Entry is the pullback high, stop the pullback
+ * low — so each trade risks the precise reclaim structure instead of Oracle's
+ * wide default stop.
+ */
+export function computeMomentumSignal(stock: StockState, bars: Bar[], now: Date): MomentumSignal {
+  if (!config.execution.momentum_enabled) return emptyMomentumSignal();
+  if (bars.length === 0) return emptyMomentumSignal();
+
+  const tz = config.market_hours.timezone;
+  const todayEt = formatInTimeZone(now, tz, 'yyyy-MM-dd');
+  const rangeStartMin = 9 * 60 + 30;
+  const nowMs = now.getTime();
+
+  const sessionBars = bars.filter((bar) => {
+    if (bar.timestamp.getTime() > nowMs) return false;
+    const etDate = formatInTimeZone(bar.timestamp, tz, 'yyyy-MM-dd');
+    if (etDate !== todayEt) return false;
+    const [h, m] = formatInTimeZone(bar.timestamp, tz, 'HH:mm').split(':').map(Number);
+    return h * 60 + m >= rangeStartMin;
+  });
+
+  // Need at least ~15 min of session data to have a meaningful HOD→pullback
+  // structure; before that ORB owns the entry pattern.
+  if (sessionBars.length < 15) return emptyMomentumSignal();
+
+  const sessionOpen = sessionBars[0].open;
+  const latest = sessionBars[sessionBars.length - 1];
+
+  let hod = -Infinity;
+  let hodIdx = 0;
+  for (let i = 0; i < sessionBars.length - 1; i++) {
+    if (sessionBars[i].high > hod) {
+      hod = sessionBars[i].high;
+      hodIdx = i;
+    }
+  }
+  if (!isFinite(hod) || sessionOpen <= 0) return emptyMomentumSignal();
+
+  const moveFromOpen = (hod - sessionOpen) / sessionOpen;
+  if (moveFromOpen < config.execution.momentum_min_move_pct) return emptyMomentumSignal();
+
+  const postHod = sessionBars.slice(hodIdx + 1, -1);
+  if (postHod.length < 2) return emptyMomentumSignal();
+
+  const pullbackLow = Math.min(...postHod.map((b) => b.low));
+  const pullbackHigh = Math.max(...postHod.map((b) => b.high));
+  const pullbackDepth = hod > 0 ? (hod - pullbackLow) / hod : 0;
+
+  if (pullbackDepth < config.execution.momentum_min_pullback_pct) return emptyMomentumSignal();
+  // Higher-low structure: the dip must hold above the session open, otherwise
+  // the "pullback" is really a trend break.
+  if (pullbackLow <= sessionOpen) return emptyMomentumSignal();
+
+  const risk = pullbackHigh - pullbackLow;
+  const reward =
+    stock.sellZonePrice !== null && stock.sellZonePrice !== undefined
+      ? stock.sellZonePrice - pullbackHigh
+      : null;
+  const rrToSellZone = reward !== null && risk > 0 ? reward / risk : null;
+
+  const breakAbove = latest.close > pullbackHigh;
+  const avgPullbackVol = postHod.reduce((s, b) => s + b.volume, 0) / postHod.length;
+  const volumeConfirm = latest.volume >= avgPullbackVol * config.execution.momentum_volume_mult;
+  const referencePrice = stock.currentPrice ?? latest.close;
+  const chasePct = pullbackHigh > 0 ? (referencePrice - pullbackHigh) / pullbackHigh : Infinity;
+  const withinChase = chasePct <= config.execution.momentum_max_chase_pct;
+
+  const matched = breakAbove && volumeConfirm && withinChase && risk > 0;
+  if (!matched) {
+    return {
+      matched: false,
+      pullbackHigh,
+      pullbackLow,
+      hod,
+      sessionOpen,
+      entry: pullbackHigh,
+      stop: pullbackLow,
+      rrToSellZone,
+      details: [],
+    };
+  }
+
+  const details = [
+    `Momentum reclaim above ${pullbackHigh.toFixed(3)}`,
+    `Session open ${sessionOpen.toFixed(3)}, HOD ${hod.toFixed(3)}, pullback low ${pullbackLow.toFixed(3)}`,
+    `Move from open ${(moveFromOpen * 100).toFixed(1)}%, pullback depth ${(pullbackDepth * 100).toFixed(1)}%`,
+    `Suggested stop ${pullbackLow.toFixed(3)} (pullback low)`,
+  ];
+  if (typeof rrToSellZone === 'number') {
+    details.push(`Estimated R:R to sell zone ${rrToSellZone.toFixed(2)}x`);
+  }
+
+  return {
+    matched: true,
+    pullbackHigh,
+    pullbackLow,
+    hod,
+    sessionOpen,
+    entry: pullbackHigh,
+    stop: pullbackLow,
+    rrToSellZone,
+    details,
+  };
+}
+
 class RuleEngineService {
   async getRankedCandidates(stocks: StockState[], limit = 10): Promise<TradeCandidate[]> {
     const evaluated = await Promise.all(
@@ -207,24 +344,27 @@ class RuleEngineService {
   }
 
   private async evaluateStock(stock: StockState, messageContext: SymbolMessageContext): Promise<TradeCandidate | null> {
-    const [redCandleSignal, orbSignal] = await Promise.all([
+    const [redCandleSignal, orbSignal, momentumSignal] = await Promise.all([
       this.detectRedCandleTheory(stock),
       this.detectOrbBreakout(stock),
+      this.detectMomentumContinuation(stock),
     ]);
-    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal);
+    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal, momentumSignal);
   }
 
   /**
    * Pure scoring path. Takes pre-resolved inputs (message context + red-candle
-   * signal + ORB signal) and returns the candidate without touching any I/O —
-   * exposed so offline tooling (historical replay, unit tests) can feed
-   * synthesized inputs through the same scoring logic the live bot uses.
+   * signal + ORB signal + momentum signal) and returns the candidate without
+   * touching any I/O — exposed so offline tooling (historical replay, unit
+   * tests) can feed synthesized inputs through the same scoring logic the
+   * live bot uses.
    */
   scoreFromInputs(
     stock: StockState,
     messageContext: SymbolMessageContext,
     redCandleSignal: RedCandleSignal,
     orbSignal: OrbSignal = emptyOrbSignal(),
+    momentumSignal: MomentumSignal = emptyMomentumSignal(),
   ): TradeCandidate | null {
     const oracleScore = this.scoreOracle(stock);
     const messageScore = Math.min(100, messageContext.convictionScore);
@@ -237,8 +377,11 @@ class RuleEngineService {
     if (orbSignal.matched) {
       weighted += 6;
     }
+    if (momentumSignal.matched) {
+      weighted += 6;
+    }
 
-    const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal, orbSignal);
+    const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal, orbSignal, momentumSignal);
     if (!setup) {
       return null;
     }
@@ -256,6 +399,9 @@ class RuleEngineService {
     if (setup === 'orb_breakout' && orbSignal.matched) {
       rationale.push(...orbSignal.details);
     }
+    if (setup === 'momentum_continuation' && momentumSignal.matched) {
+      rationale.push(...momentumSignal.details);
+    }
 
     let suggestedEntry = stock.currentPrice ?? stock.buyZonePrice ?? 0;
     let suggestedStop: number;
@@ -267,6 +413,21 @@ class RuleEngineService {
       // synthetic target so downstream filters still see a valid RR.
       suggestedEntry = stock.currentPrice ?? orbSignal.entry;
       suggestedStop = orbSignal.stop;
+      const risk = suggestedEntry - suggestedStop;
+      const oneRTarget = suggestedEntry + Math.max(risk, 0);
+      suggestedTarget =
+        stock.sellZonePrice && stock.sellZonePrice > oneRTarget ? stock.sellZonePrice : oneRTarget;
+    } else if (
+      setup === 'momentum_continuation' &&
+      momentumSignal.matched &&
+      momentumSignal.entry !== null &&
+      momentumSignal.stop !== null
+    ) {
+      // Momentum: entry is the pullback-high break, stop is the pullback low.
+      // Same sell-zone-vs-1R target preference as ORB so a too-close sell zone
+      // doesn't cut R:R below filter thresholds.
+      suggestedEntry = stock.currentPrice ?? momentumSignal.entry;
+      suggestedStop = momentumSignal.stop;
       const risk = suggestedEntry - suggestedStop;
       const oneRTarget = suggestedEntry + Math.max(risk, 0);
       suggestedTarget =
@@ -359,15 +520,9 @@ class RuleEngineService {
     tags: Partial<Record<SetupTag, number>>,
     redCandleSignal: RedCandleSignal,
     orbSignal: OrbSignal,
+    momentumSignal: MomentumSignal,
   ): CandidateSetup | null {
     const hasTag = (tag: SetupTag): boolean => (tags[tag] ?? 0) > 0;
-
-    if (
-      redCandleSignal.matched &&
-      (hasTag('red_to_green') || hasTag('first_pullback') || hasTag('vwap_reclaim') || hasTag('gap_and_go'))
-    ) {
-      return 'red_candle_theory';
-    }
 
     if (redCandleSignal.matched) {
       return 'red_candle_theory';
@@ -377,13 +532,7 @@ class RuleEngineService {
       return 'orb_breakout';
     }
 
-    if (
-      (hasTag('gap_and_go') || hasTag('orb_break')) &&
-      stock.buyZonePrice !== null &&
-      stock.stopPrice !== null &&
-      stock.trend30m !== 'down' &&
-      this.isMomentumSetupValid(stock)
-    ) {
+    if (momentumSignal.matched && stock.trend30m !== 'down') {
       return 'momentum_continuation';
     }
 
@@ -400,43 +549,7 @@ class RuleEngineService {
       return 'crowded_extension_watch';
     }
 
-    if (
-      stock.buyZonePrice !== null &&
-      stock.stopPrice !== null &&
-      stock.sellZonePrice !== null &&
-      this.isMomentumSetupValid(stock)
-    ) {
-      // Fallback candidate when structure is good but message tags are sparse.
-      return 'momentum_continuation';
-    }
-
     return null;
-  }
-
-  /**
-   * Gate momentum entries:
-   *  - optionally require 30m uptrend
-   *  - require premarket gap >= momentum_gap_pct (from oracle lastPrice)
-   *  - require current price within momentum_max_chase_pct above buy zone
-   *    (prevents chase fills 10-50% above the Oracle entry zone)
-   */
-  private isMomentumSetupValid(stock: StockState): boolean {
-    const exec = config.execution;
-
-    if (exec.require_uptrend_for_momentum && stock.trend30m !== 'up') {
-      return false;
-    }
-
-    const currentPrice = stock.currentPrice;
-    if (currentPrice === null) return false;
-
-    const lastPrice = stock.lastPrice;
-    if (lastPrice && lastPrice > 0) {
-      const gapPct = (currentPrice - lastPrice) / lastPrice;
-      if (gapPct < exec.momentum_gap_pct) return false;
-    }
-
-    return this.isNearBuyZone(stock);
   }
 
   private isNearBuyZone(stock: StockState): boolean {
@@ -458,6 +571,16 @@ class RuleEngineService {
       return computeOrbSignal(stock, bars, new Date());
     } catch {
       return emptyOrbSignal();
+    }
+  }
+
+  private async detectMomentumContinuation(stock: StockState): Promise<MomentumSignal> {
+    if (!config.execution.momentum_enabled) return emptyMomentumSignal();
+    try {
+      const bars = await fetchAlpaca1MinBars(stock.symbol, 390);
+      return computeMomentumSignal(stock, bars, new Date());
+    } catch {
+      return emptyMomentumSignal();
     }
   }
 

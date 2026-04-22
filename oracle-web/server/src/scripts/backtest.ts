@@ -20,6 +20,7 @@ function main(): void {
 
   let startingCash: number | undefined;
   let riskPerTrade: number | undefined;
+  let maxTradeCost: number | undefined;
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--starting-cash' && args[i + 1]) {
       startingCash = Number(args[i + 1]);
@@ -33,6 +34,12 @@ function main(): void {
         fail(`Invalid --risk-per-trade: ${args[i + 1]}`);
       }
       i++;
+    } else if (args[i] === '--max-trade-cost' && args[i + 1]) {
+      maxTradeCost = Number(args[i + 1]);
+      if (!Number.isFinite(maxTradeCost) || maxTradeCost <= 0) {
+        fail(`Invalid --max-trade-cost: ${args[i + 1]}`);
+      }
+      i++;
     }
   }
 
@@ -41,7 +48,7 @@ function main(): void {
     fail(`Recording not found: ${filePath}`);
   }
 
-  const result = backtestRunner.runDay(filePath, { startingCash, riskPerTrade });
+  const result = backtestRunner.runDay(filePath, { startingCash, riskPerTrade, maxTradeCost });
   console.log(JSON.stringify(result, null, 2));
   const s = result.summary;
   console.error(

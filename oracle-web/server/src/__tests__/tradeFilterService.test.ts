@@ -9,7 +9,6 @@ vi.mock('../config.js', () => ({
       max_risk_pct: 0.10,
       risk_per_trade: 100,
       red_candle_vol_mult: 1.5,
-      momentum_gap_pct: 0.03,
     },
   },
 }));

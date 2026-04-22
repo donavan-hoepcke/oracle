@@ -56,6 +56,11 @@ export interface BacktestResult {
 export interface BacktestOptions {
   startingCash?: number;
   riskPerTrade?: number;
+  // Per-position dollar ceiling on deployed capital. Sizing becomes
+  // min(risk-based shares, maxTradeCost / entry). Without it, a single
+  // high-risk-per-share pick can consume the entire daily capital cap and
+  // squeeze out the other opportunities.
+  maxTradeCost?: number;
 }
 
 const DEFAULT_RISK_PCT = 0.01;
@@ -92,6 +97,7 @@ export class BacktestRunner {
     const exec = config.execution;
     const startingCash = opts.startingCash ?? 10000;
     const riskPerTrade = opts.riskPerTrade ?? startingCash * DEFAULT_RISK_PCT;
+    const maxTradeCost = opts.maxTradeCost;
 
     let cash = startingCash;
     let realizedPnl = 0;
@@ -130,6 +136,7 @@ export class BacktestRunner {
         tradedSymbols,
         startingCash,
         riskPerTrade,
+        maxTradeCost,
         realizedPnl,
         cash,
         (cost) => {
@@ -254,6 +261,7 @@ export class BacktestRunner {
     tradedSymbols: Set<string>,
     startingCash: number,
     riskPerTrade: number,
+    maxTradeCost: number | undefined,
     realizedPnl: number,
     cash: number,
     onSpend: (cost: number) => void,
@@ -334,7 +342,11 @@ export class BacktestRunner {
       }
 
       const riskPerShare = entry - stop;
-      const shares = Math.floor(riskPerTrade / riskPerShare);
+      const riskSizedShares = Math.floor(riskPerTrade / riskPerShare);
+      const costCappedShares = maxTradeCost !== undefined && entry > 0
+        ? Math.floor(maxTradeCost / entry)
+        : Infinity;
+      const shares = Math.min(riskSizedShares, costCappedShares);
       if (shares < 1) continue;
       const cost = shares * entry;
       const maxDeploy = startingCash * exec.max_capital_pct - deployed;
