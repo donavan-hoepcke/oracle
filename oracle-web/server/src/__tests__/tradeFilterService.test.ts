@@ -8,6 +8,7 @@ vi.mock('../config.js', () => ({
       max_daily_drawdown_pct: 0.05,
       max_risk_pct: 0.10,
       risk_per_trade: 100,
+      max_trade_cost: 0,
       red_candle_vol_mult: 1.5,
       momentum_gap_pct: 0.03,
     },
@@ -119,11 +120,20 @@ describe('TradeFilterService', () => {
       expect(size.costBasis).toBe(2000);
     });
 
-    it('returns 0 shares if cost would breach capital cap', () => {
+    it('clips shares to remaining capital cap instead of rejecting', () => {
       const candidate = makeCandidate({ suggestedEntry: 100.00, suggestedStop: 95.00 });
-      // risk_per_trade=100, riskPerShare=5, shares=floor(100/5)=20, cost=2000
-      // account has 10000 cash, 50% cap = 5000, already deployed 4500
+      // risk_per_trade=100, riskPerShare=5, riskSizedShares=20, riskCost=2000.
+      // Account has 10000 cash, 50% cap = 5000, already deployed 4500 → maxDeployable 500.
+      // Clip to floor(500/100)=5 shares.
       const account = makeAccount({ deployedCapital: 4500 });
+      const size = tradeFilterService.calculatePositionSize(candidate, account);
+      expect(size.shares).toBe(5);
+      expect(size.costBasis).toBe(500);
+    });
+
+    it('returns 0 shares if capital cap leaves no room for even one share', () => {
+      const candidate = makeCandidate({ suggestedEntry: 100.00, suggestedStop: 95.00 });
+      const account = makeAccount({ deployedCapital: 4950 });
       const size = tradeFilterService.calculatePositionSize(candidate, account);
       expect(size.shares).toBe(0);
     });
@@ -132,6 +142,32 @@ describe('TradeFilterService', () => {
       const candidate = makeCandidate({ suggestedEntry: 1.00, suggestedStop: 1.00 });
       const size = tradeFilterService.calculatePositionSize(candidate, makeAccount());
       expect(size.shares).toBe(0);
+    });
+  });
+
+  describe('max trade cost', () => {
+    it('clips shares to max_trade_cost when set', async () => {
+      vi.resetModules();
+      vi.doMock('../config.js', () => ({
+        config: {
+          execution: {
+            max_positions: 8,
+            max_capital_pct: 0.5,
+            max_daily_drawdown_pct: 0.05,
+            max_risk_pct: 0.10,
+            risk_per_trade: 100,
+            max_trade_cost: 100,
+            red_candle_vol_mult: 1.5,
+          },
+        },
+      }));
+      const { tradeFilterService: isolatedService } = await import('../services/tradeFilterService.js');
+      const candidate = makeCandidate({ suggestedEntry: 2.00, suggestedStop: 1.95 });
+      // riskSizedShares=2000, costWithout=4000. max_trade_cost=100 → floor(100/2)=50 shares.
+      const size = isolatedService.calculatePositionSize(candidate, makeAccount());
+      expect(size.shares).toBe(50);
+      expect(size.costBasis).toBe(100);
+      vi.doUnmock('../config.js');
     });
   });
 });

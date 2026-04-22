@@ -83,6 +83,7 @@ const configSchema = z.object({
       enabled: z.boolean().default(false),
       paper: z.boolean().default(true),
       risk_per_trade: z.number().positive().default(100),
+      max_trade_cost: z.number().nonnegative().default(0),
       max_positions: z.number().int().positive().default(8),
       max_capital_pct: z.number().min(0.01).max(1).default(0.5),
       max_daily_drawdown_pct: z.number().min(0.01).max(1).default(0.05),
