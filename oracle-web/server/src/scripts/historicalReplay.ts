@@ -8,7 +8,9 @@ import {
   emptyMessageContext,
   emptyRedCandleSignal,
   emptyOrbSignal,
+  emptyMomentumSignal,
   computeOrbSignal,
+  computeMomentumSignal,
 } from '../services/ruleEngineService.js';
 import type { Bar } from '../services/indicatorService.js';
 import type { CycleRecord, RecordedItem, RecordedDecision } from '../services/recordingService.js';
@@ -269,11 +271,15 @@ async function main(): Promise<void> {
       const orbSignal = tMs >= rthStartMs
         ? computeOrbSignal(stock, barSeriesForOrb[sym], new Date(tMs))
         : emptyOrbSignal();
+      const momentumSignal = tMs >= rthStartMs
+        ? computeMomentumSignal(stock, barSeriesForOrb[sym], new Date(tMs))
+        : emptyMomentumSignal();
       const candidate = ruleEngineService.scoreFromInputs(
         stock,
         emptyMessageContext(sym),
         emptyRedCandleSignal(),
         orbSignal,
+        momentumSignal,
       );
       if (candidate) {
         decisions.push({

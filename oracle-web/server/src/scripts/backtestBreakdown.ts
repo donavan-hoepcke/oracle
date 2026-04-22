@@ -18,9 +18,27 @@ function fmtRow(label: string, s: ReturnType<typeof summarize>): string {
   return `  ${label.padEnd(24)}  n=${String(s.n).padStart(3)}  ${s.wins}W/${s.losses}L  winRate=${(s.winRate * 100).toFixed(0).padStart(3)}%  pnl=$${s.totalPnl.toFixed(2).padStart(8)}  avgR=${s.avgR.toFixed(2).padStart(5)}`;
 }
 
-const days = process.argv.slice(2);
+const args = process.argv.slice(2);
+let startingCash: number | undefined;
+let riskPerTrade: number | undefined;
+let maxTradeCost: number | undefined;
+const days: string[] = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--starting-cash' && args[i + 1]) {
+    startingCash = Number(args[i + 1]);
+    i++;
+  } else if (args[i] === '--risk-per-trade' && args[i + 1]) {
+    riskPerTrade = Number(args[i + 1]);
+    i++;
+  } else if (args[i] === '--max-trade-cost' && args[i + 1]) {
+    maxTradeCost = Number(args[i + 1]);
+    i++;
+  } else {
+    days.push(args[i]);
+  }
+}
 if (days.length === 0) {
-  console.error('Usage: tsx backtestBreakdown.ts <YYYY-MM-DD> [YYYY-MM-DD...]');
+  console.error('Usage: tsx backtestBreakdown.ts [--starting-cash N] <YYYY-MM-DD> [YYYY-MM-DD...]');
   process.exit(1);
 }
 
@@ -31,7 +49,7 @@ for (const day of days) {
     console.error(`skipping ${day}: not found`);
     continue;
   }
-  const r = backtestRunner.runDay(path);
+  const r = backtestRunner.runDay(path, { startingCash, riskPerTrade, maxTradeCost });
   all.push(...r.trades);
 
   const dayAll = summarize(r.trades);
