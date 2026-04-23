@@ -290,6 +290,30 @@ export class BacktestRunner {
         continue;
       }
 
+      if (cycle.regime && exec.regime?.enabled) {
+        const m = cycle.regime.market;
+        if (
+          m.spyTrendPct !== null &&
+          m.vxxRocPct !== null &&
+          m.spyTrendPct <= exec.regime.veto_market_spy_trend_pct &&
+          m.vxxRocPct >= exec.regime.veto_market_vxx_roc_pct
+        ) {
+          skipped.push({ symbol: decision.symbol, ts: cycle.ts, reason: 'market panic' });
+          continue;
+        }
+        const tr = cycle.regime.tickers[decision.symbol];
+        if (tr) {
+          if (tr.sampleSize >= exec.regime.veto_graveyard_min_sample && tr.winRate === 0) {
+            skipped.push({ symbol: decision.symbol, ts: cycle.ts, reason: `graveyard 0/${tr.sampleSize}` });
+            continue;
+          }
+          if (tr.atrRatio !== null && tr.atrRatio >= exec.regime.veto_exhaustion_atr_ratio) {
+            skipped.push({ symbol: decision.symbol, ts: cycle.ts, reason: `exhaustion ${tr.atrRatio.toFixed(2)}` });
+            continue;
+          }
+        }
+      }
+
       const unrealized = trades
         .filter((t) => !t.exitReason)
         .reduce((sum, t) => {
