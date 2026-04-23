@@ -111,6 +111,27 @@ const configSchema = z.object({
       trailing_mfe_activate_r: z.number().positive().default(0.5),
       trailing_mfe_giveback_pct: z.number().min(0).max(1).default(0.5),
       eod_flatten_time: z.string().regex(/^\d{2}:\d{2}$/).default('15:50'),
+      regime: z
+        .object({
+          enabled: z.boolean().default(false),
+          score_weight: z.number().min(0).max(50).default(10),
+          market_weight: z.number().min(0).max(1).default(0.5),
+          sector_weight: z.number().min(0).max(1).default(0.2),
+          ticker_weight: z.number().min(0).max(1).default(0.3),
+          spy_trend_normalize_pct: z.number().positive().default(0.005),
+          vxx_roc_normalize_pct: z.number().positive().default(0.05),
+          sector_trend_normalize_pct: z.number().positive().default(0.01),
+          veto_market_spy_trend_pct: z.number().max(0).default(-0.01),
+          veto_market_vxx_roc_pct: z.number().positive().default(0.05),
+          veto_graveyard_min_sample: z.number().int().positive().default(5),
+          veto_exhaustion_atr_ratio: z.number().positive().default(3.0),
+          winrate_min_sample: z.number().int().positive().default(3),
+          atr_penalty_ratio: z.number().positive().default(2.5),
+          sector_etf_bars_lookback_min: z.number().int().positive().default(30),
+          trade_history_max_trades: z.number().int().positive().default(20),
+          trade_history_max_calendar_days: z.number().int().positive().default(30),
+        })
+        .default({}),
     })
     .default({}),
   market_hours: z.object({
