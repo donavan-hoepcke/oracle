@@ -24,7 +24,13 @@ vi.mock('../config.js', () => ({
       },
     },
     market_hours: { timezone: 'America/New_York', open: '09:30', close: '16:00' },
+    recording: { dir: '' },
   },
+  finnhubApiKey: '',
+  polygonApiKey: '',
+  alpacaApiKeyId: '',
+  alpacaApiSecretKey: '',
+  alpacaDataFeed: 'iex',
 }));
 
 import {
@@ -195,5 +201,73 @@ describe('computeTickerRegime', () => {
     const r = computeTickerRegime('ABC', 'orb_breakout', [], [], [], 'energy', new Date());
     expect(r.atrRatio).toBeNull();
     expect(r.status).toBe('unavailable');
+  });
+});
+
+import { RegimeService } from '../services/regimeService.js';
+
+describe('RegimeService.buildRegimeSnapshot', () => {
+  function barFromClose(close: number, minute = 0): Bar {
+    return makeBar(new Date(2026, 3, 22, 13, minute), close);
+  }
+
+  function dailyBars(): Bar[] {
+    const bars: Bar[] = [];
+    let p = 10;
+    for (let i = 0; i < 15; i++) {
+      bars.push({
+        timestamp: new Date(2026, 3, i + 1),
+        open: p, high: p + 1, low: p - 1, close: p + 0.1, volume: 100,
+      });
+      p += 0.1;
+    }
+    return bars;
+  }
+
+  it('assembles market, sector, and ticker entries for the watchlist', async () => {
+    const fetchBars = vi.fn(async (symbol: string, timeframe: string) => {
+      if (timeframe === '1Day') return dailyBars();
+      if (symbol === 'VXX') return [barFromClose(20, 0), barFromClose(20, 29)];
+      if (symbol === 'SPY') return makeSlope(0.003);
+      return makeSlope(0.005); // sector ETFs uptrending
+    });
+    const fetchTodayBars = vi.fn(async (_symbol: string) => [barFromClose(10.05, 0), barFromClose(10.08, 1)]);
+    const sectorMap = {
+      getSectorFor: vi.fn(async (sym: string) => (sym === 'ABC' ? 'biotechnology' : 'energy')),
+      getEtfFor: (sector: string) =>
+        sector === 'biotechnology' ? 'XBI' : sector === 'energy' ? 'XLE' : 'SPY',
+    };
+    const tradeHistory = { getRecentTrades: vi.fn(async () => []) };
+
+    const service = new RegimeService({ fetchBars, fetchTodayBars, sectorMap, tradeHistory });
+    const now = new Date(2026, 3, 22, 14, 0);
+    const snapshot = await service.buildRegimeSnapshot(['ABC', 'XYZ'], 'orb_breakout', now);
+
+    expect(snapshot.market.status).toBe('ok');
+    expect(snapshot.sectors.XBI.status).toBe('ok');
+    expect(snapshot.sectors.XLE.status).toBe('ok');
+    expect(snapshot.tickers.ABC.sector).toBe('biotechnology');
+    expect(snapshot.tickers.XYZ.sector).toBe('energy');
+    // SPY + VXX fetched exactly once
+    expect(fetchBars.mock.calls.filter(([s]) => s === 'SPY').length).toBe(1);
+    expect(fetchBars.mock.calls.filter(([s]) => s === 'VXX').length).toBe(1);
+    // Each distinct sector ETF fetched exactly once
+    expect(fetchBars.mock.calls.filter(([s]) => s === 'XBI').length).toBe(1);
+    expect(fetchBars.mock.calls.filter(([s]) => s === 'XLE').length).toBe(1);
+  });
+
+  it('degrades to status=unavailable on fetch failure but still returns snapshot', async () => {
+    const fetchBars = vi.fn(async () => { throw new Error('network'); });
+    const fetchTodayBars = vi.fn(async () => []);
+    const sectorMap = {
+      getSectorFor: vi.fn(async () => 'unknown'),
+      getEtfFor: (_: string) => 'SPY',
+    };
+    const tradeHistory = { getRecentTrades: vi.fn(async () => []) };
+
+    const service = new RegimeService({ fetchBars, fetchTodayBars, sectorMap, tradeHistory });
+    const snapshot = await service.buildRegimeSnapshot(['ABC'], 'orb_breakout', new Date());
+    expect(snapshot.market.status).toBe('unavailable');
+    expect(snapshot.tickers.ABC.status).toBe('unavailable');
   });
 });

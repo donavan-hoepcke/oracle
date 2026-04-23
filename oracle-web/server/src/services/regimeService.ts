@@ -215,3 +215,88 @@ export function computeTickerRegime(
   const status: 'ok' | 'unavailable' = atrRatio === null ? 'unavailable' : 'ok';
   return { score, sector, atrRatio, winRate, sampleSize: total, status };
 }
+
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
+import type { SectorMapService } from './sectorMapService.js';
+import type { TradeHistoryService } from './tradeHistoryService.js';
+import { fetchAlpacaBars } from './alpacaBarService.js';
+import { sectorMapService } from './sectorMapService.js';
+import { tradeHistoryService } from './tradeHistoryService.js';
+
+export interface RegimeDeps {
+  fetchBars: (symbol: string, timeframe: string, lookbackMinutes: number) => Promise<Bar[]>;
+  fetchTodayBars: (symbol: string) => Promise<Bar[]>;
+  sectorMap: Pick<SectorMapService, 'getSectorFor' | 'getEtfFor'>;
+  tradeHistory: Pick<TradeHistoryService, 'getRecentTrades'>;
+}
+
+export class RegimeService {
+  constructor(private readonly deps: RegimeDeps) {}
+
+  async buildRegimeSnapshot(
+    symbols: string[],
+    setup: CandidateSetup | string,
+    now: Date,
+  ): Promise<RegimeSnapshot> {
+    const cfg = config.execution.regime;
+
+    const spyPromise = this.deps.fetchBars('SPY', '1Min', cfg.sector_etf_bars_lookback_min).catch(() => [] as Bar[]);
+    // VXX: 2 daily bars (yesterday + today) to compute rate-of-change
+    const vxxPromise = this.deps.fetchBars('VXX', '1Day', 2 * 24 * 60).catch(() => [] as Bar[]);
+
+    const sectorBySymbol = new Map<string, string>();
+    await Promise.all(
+      symbols.map(async (sym) => {
+        try {
+          sectorBySymbol.set(sym, await this.deps.sectorMap.getSectorFor(sym));
+        } catch {
+          sectorBySymbol.set(sym, 'unknown');
+        }
+      }),
+    );
+
+    const distinctEtfs = Array.from(
+      new Set(Array.from(sectorBySymbol.values()).map((s) => this.deps.sectorMap.getEtfFor(s))),
+    );
+    const etfBarsPromise = Promise.all(
+      distinctEtfs.map(async (etf) => {
+        const bars = await this.deps.fetchBars(etf, '1Min', cfg.sector_etf_bars_lookback_min).catch(() => [] as Bar[]);
+        return [etf, bars] as const;
+      }),
+    );
+
+    const [spyBars, vxxBars, etfBarsList] = await Promise.all([spyPromise, vxxPromise, etfBarsPromise]);
+    const market = computeMarketRegime(spyBars, vxxBars, now);
+
+    const sectors: Record<string, SectorRegime> = {};
+    for (const [etf, bars] of etfBarsList) {
+      sectors[etf] = computeSectorRegime(bars, etf, now);
+    }
+
+    const tickers: Record<string, TickerRegime> = {};
+    await Promise.all(
+      symbols.map(async (sym) => {
+        const sector = sectorBySymbol.get(sym) ?? 'unknown';
+        const [dailyBars, todayBars, pastTrades] = await Promise.all([
+          this.deps.fetchBars(sym, '1Day', 30 * 24 * 60).catch(() => [] as Bar[]),
+          this.deps.fetchTodayBars(sym).catch(() => [] as Bar[]),
+          this.deps.tradeHistory.getRecentTrades(sym, String(setup), now).catch(() => []),
+        ]);
+        tickers[sym] = computeTickerRegime(sym, setup, dailyBars, todayBars, pastTrades, sector, now);
+      }),
+    );
+
+    return { ts: now.toISOString(), market, sectors, tickers };
+  }
+}
+
+/** Singleton RegimeService wired to Alpaca + Finnhub real dependencies. */
+export const regimeService = new RegimeService({
+  fetchBars: fetchAlpacaBars,
+  fetchTodayBars: (symbol) => fetchAlpacaBars(symbol, '1Min', 390),
+  sectorMap: sectorMapService,
+  tradeHistory: tradeHistoryService,
+});
