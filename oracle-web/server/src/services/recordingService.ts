@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { StockState } from '../websocket/priceSocket.js';
 import { TradeCandidate, CandidateSetup } from './ruleEngineService.js';
 import { ActiveTrade, TradeLedgerEntry, FilterRejection } from './executionService.js';
+import type { RegimeSnapshot } from './regimeService.js';
 
 export interface RecordedItem {
   symbol: string;
@@ -54,6 +55,7 @@ export interface CycleRecord {
   decisions: RecordedDecision[];
   activeTrades: ActiveTrade[];
   closedTrades: TradeLedgerEntry[];
+  regime?: RegimeSnapshot | null;
 }
 
 export interface CycleInputs {
@@ -63,6 +65,7 @@ export interface CycleInputs {
   activeTrades: ActiveTrade[];
   closedTrades: TradeLedgerEntry[];
   marketStatus: { isOpen: boolean; openTime: string; closeTime: string };
+  regime?: RegimeSnapshot | null;
 }
 
 function toRecordedItem(s: StockState): RecordedItem {
@@ -132,6 +135,7 @@ export class RecordingService {
       decisions: toDecisions(inputs.candidates, inputs.rejections),
       activeTrades: inputs.activeTrades,
       closedTrades: inputs.closedTrades,
+      regime: inputs.regime ?? null,
     };
 
     const filePath = resolve(config.recording.dir, `${tradingDay}.jsonl`);
