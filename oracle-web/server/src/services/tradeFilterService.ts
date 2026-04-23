@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { TradeCandidate as BaseTradeCandidate } from './ruleEngineService.js';
+import type { RegimeSnapshot } from './regimeService.js';
 
 type TradeCandidate = BaseTradeCandidate & {
   suggestedEntry: number;
@@ -28,7 +29,11 @@ export interface PositionSize {
 }
 
 class TradeFilterService {
-  filterCandidate(candidate: TradeCandidate, account: AccountState): FilterResult {
+  filterCandidate(
+    candidate: TradeCandidate,
+    account: AccountState,
+    regime?: RegimeSnapshot,
+  ): FilterResult {
     const exec = config.execution;
 
     const dailyLoss = account.dailyRealizedPnl + account.dailyUnrealizedPnl;
@@ -54,6 +59,46 @@ class TradeFilterService {
       const riskPct = (entry - stop) / entry;
       if (riskPct > exec.max_risk_pct) {
         return { passed: false, reason: `risk_pct ${(riskPct * 100).toFixed(1)}% exceeds max ${(exec.max_risk_pct * 100).toFixed(1)}%` };
+      }
+    }
+
+    if (regime && exec.regime?.enabled) {
+      const vetoResult = this.runRegimeVetos(candidate, regime);
+      if (!vetoResult.passed) return vetoResult;
+    }
+
+    return { passed: true, reason: null };
+  }
+
+  private runRegimeVetos(candidate: TradeCandidate, regime: RegimeSnapshot): FilterResult {
+    const cfg = config.execution.regime;
+
+    const m = regime.market;
+    if (
+      m.spyTrendPct !== null &&
+      m.vxxRocPct !== null &&
+      m.spyTrendPct <= cfg.veto_market_spy_trend_pct &&
+      m.vxxRocPct >= cfg.veto_market_vxx_roc_pct
+    ) {
+      return {
+        passed: false,
+        reason: `market panic (SPY ${(m.spyTrendPct * 100).toFixed(2)}% / VXX ${(m.vxxRocPct * 100).toFixed(2)}%)`,
+      };
+    }
+
+    const tr = regime.tickers[candidate.symbol];
+    if (tr) {
+      if (tr.sampleSize >= cfg.veto_graveyard_min_sample && tr.winRate === 0) {
+        return {
+          passed: false,
+          reason: `ticker+setup graveyard (0/${tr.sampleSize} on ${candidate.setup})`,
+        };
+      }
+      if (tr.atrRatio !== null && tr.atrRatio >= cfg.veto_exhaustion_atr_ratio) {
+        return {
+          passed: false,
+          reason: `exhaustion (ATR ratio ${tr.atrRatio.toFixed(2)})`,
+        };
       }
     }
 
