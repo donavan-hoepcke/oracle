@@ -80,7 +80,7 @@ execution:
   trailing_mfe_giveback_pct: 0.5
   eod_flatten_time: "15:50"
   regime:
-    enabled: false
+    enabled: true
     score_weight: 10
     market_weight: 0.5
     sector_weight: 0.2
