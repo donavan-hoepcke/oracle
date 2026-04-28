@@ -224,17 +224,29 @@ export class ExecutionService {
    */
   private async reconcileWithAlpaca(stocks: StockState[]): Promise<void> {
     let positions;
+    let openOrders;
     try {
-      positions = await alpacaOrderService.getPositions();
+      [positions, openOrders] = await Promise.all([
+        alpacaOrderService.getPositions(),
+        alpacaOrderService.getOpenOrders(),
+      ]);
     } catch (err) {
       console.error('Reconcile failed:', err);
       return;
     }
+    // A position with an open sell order means a close is already in flight
+    // (either submitted by us this cycle, or queued by Alpaca for the next
+    // session). Adopting it here would clobber the in-flight exit and double-
+    // book the symbol on the next entry cycle.
+    const symbolsWithOpenSell = new Set(
+      openOrders.filter((o) => o.side === 'sell').map((o) => o.symbol),
+    );
     const stockMap = new Map(stocks.map((s) => [s.symbol, s]));
     const exec = config.execution;
 
     for (const pos of positions) {
       if (this.activeTrades.some((t) => t.symbol === pos.symbol)) continue;
+      if (symbolsWithOpenSell.has(pos.symbol)) continue;
 
       const stock = stockMap.get(pos.symbol);
       const entry = pos.avgEntryPrice;
@@ -567,11 +579,24 @@ export class ExecutionService {
     reason: TradeLedgerEntry['exitReason'],
     detail: string = ''
   ): Promise<void> {
+    const previousStatus = trade.status;
     trade.status = 'exiting';
     try {
       await alpacaOrderService.closePosition(trade.symbol);
     } catch (err) {
-      console.error(`Failed to close position ${trade.symbol}:`, err);
+      // Alpaca rejected the close (e.g. PDT cap, position locked, market closed
+      // for an OTC name). Do NOT push a ledger entry or remove from activeTrades
+      // — the position is still open at the broker. Revert status so the next
+      // cycle retries via the same trigger (price still below stop, EOD flatten,
+      // etc.). Without this, `flattenAll` would pile up phantom ledger entries
+      // every 30 s while reconcileWithAlpaca re-adopts the unsold position.
+      trade.status = previousStatus;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `Failed to close ${trade.symbol} (reason=${reason}): ${msg}. ` +
+          `Position remains open; will retry next cycle.`,
+      );
+      return;
     }
 
     const pnl = (exitPrice - trade.entryPrice) * trade.shares;
