@@ -255,6 +255,30 @@ class PriceSocketServer {
       },
     });
 
+    // EOD flatten — must run BEFORE the market-closed early return below so
+    // positions can still be flattened during the after-close window when the
+    // 15:50 attempts were rejected at the broker (e.g. PDT cap, low-liquidity
+    // OTC names that don't fill before 16:00). Bounded to weekday + a window
+    // that ends ~30 min after the close so we don't keep hammering the broker
+    // overnight or through weekends.
+    if (config.execution.enabled && executionService.getActiveTrades().length > 0) {
+      const { toZonedTime } = await import('date-fns-tz');
+      const nowEt = toZonedTime(new Date(), config.market_hours.timezone);
+      const dow = nowEt.getDay(); // 0=Sun, 6=Sat
+      const isWeekday = dow >= 1 && dow <= 5;
+      const [flatH, flatM] = config.execution.eod_flatten_time.split(':').map(Number);
+      const flatMinutes = flatH * 60 + flatM;
+      const [closeH, closeM] = config.market_hours.close.split(':').map(Number);
+      const closeMinutes = closeH * 60 + closeM;
+      const nowMinutes = nowEt.getHours() * 60 + nowEt.getMinutes();
+      const inFlattenWindow =
+        isWeekday && nowMinutes >= flatMinutes && nowMinutes < closeMinutes + 30;
+      if (inFlattenWindow) {
+        console.log('EOD flatten triggered');
+        await executionService.flattenAll();
+      }
+    }
+
     // Skip price fetching if market is closed (but still allow manual refresh)
     if (!marketStatus.isOpen) {
       console.log('Market closed, skipping price fetch');
@@ -378,19 +402,6 @@ class PriceSocketServer {
       }
     } catch (err) {
       console.error('Error broadcasting setup alerts:', err);
-    }
-
-    // EOD flatten check
-    if (config.execution.enabled) {
-      const { toZonedTime } = await import('date-fns-tz');
-      const now = toZonedTime(new Date(), config.market_hours.timezone);
-      const [flatH, flatM] = config.execution.eod_flatten_time.split(':').map(Number);
-      const flatMinutes = flatH * 60 + flatM;
-      const nowMinutes = now.getHours() * 60 + now.getMinutes();
-      if (nowMinutes >= flatMinutes && executionService.getActiveTrades().length > 0) {
-        console.log('EOD flatten triggered');
-        await executionService.flattenAll();
-      }
     }
 
     // Run execution engine

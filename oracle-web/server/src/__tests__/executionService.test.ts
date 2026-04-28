@@ -294,6 +294,64 @@ describe('ExecutionService', () => {
       expect(service.getLedger()).toHaveLength(1);
       expect(service.getLedger()[0].exitReason).toBe('stop');
     });
+
+    it('keeps trade active and does not write a phantom ledger when broker rejects close', async () => {
+      // Reproduces the PDT 403 case: closePosition errors at Alpaca, so the
+      // position is still open. Without the fix, exitTrade would push a fake
+      // ledger entry and clear activeTrades, then reconcileWithAlpaca would
+      // re-adopt the position next cycle and the loop would repeat.
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.closePosition.mockRejectedValueOnce(new Error('Alpaca closePosition error: 403'));
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.44)]);
+
+      expect(mockOrderService.closePosition).toHaveBeenCalledWith('AGAE');
+      expect(service.getActiveTrades()).toHaveLength(1);
+      expect(service.getActiveTrades()[0].symbol).toBe('AGAE');
+      expect(service.getActiveTrades()[0].status).toBe('filled');
+      expect(service.getLedger()).toHaveLength(0);
+
+      // Next cycle, the broker accepts the close — trade exits cleanly.
+      mockOrderService.closePosition.mockResolvedValueOnce(undefined);
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.44)]);
+
+      expect(service.getActiveTrades()).toHaveLength(0);
+      expect(service.getLedger()).toHaveLength(1);
+      expect(service.getLedger()[0].exitReason).toBe('stop');
+    });
+
+    it('does not re-adopt an Alpaca position that has an open sell order', async () => {
+      // Reproduces the reconcile-loop guard: if a close order is in flight
+      // (e.g. a prior cycle's exit hasn't filled yet, or a server crashed
+      // between submit and ledger update), reconcileWithAlpaca must skip
+      // adoption so flattenAll doesn't re-stage the same position.
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'BIYA', qty: 70, avgEntryPrice: 1.41, currentPrice: 1.30, marketValue: 91, unrealizedPL: -7.7 },
+      ]);
+      mockOrderService.getOpenOrders.mockResolvedValue([
+        { id: 'sell-1', symbol: 'BIYA', status: 'pending_new', side: 'sell', filledAvgPrice: null, filledQty: null },
+      ]);
+
+      await service.onPriceCycle([], [makeStockState('BIYA', 1.30)]);
+
+      expect(service.getActiveTrades()).toHaveLength(0);
+    });
+
+    it('still adopts an Alpaca position when there is no open sell order', async () => {
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'BIYA', qty: 70, avgEntryPrice: 1.41, currentPrice: 1.30, marketValue: 91, unrealizedPL: -7.7 },
+      ]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+
+      await service.onPriceCycle([], [makeStockState('BIYA', 1.30)]);
+
+      expect(service.getActiveTrades()).toHaveLength(1);
+      expect(service.getActiveTrades()[0].symbol).toBe('BIYA');
+    });
   });
 
   describe('wash-sale awareness', () => {
