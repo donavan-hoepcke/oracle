@@ -3,6 +3,7 @@ import { alpacaOrderService } from './alpacaOrderService.js';
 import { tradeFilterService, AccountState } from './tradeFilterService.js';
 import { TradeCandidate, CandidateSetup } from './ruleEngineService.js';
 import { StockState } from '../websocket/priceSocket.js';
+import type { RegimeSnapshot } from './regimeService.js';
 
 export interface ActiveTrade {
   symbol: string;
@@ -201,7 +202,7 @@ export class ExecutionService {
     this.enabled = enabled;
   }
 
-  async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[]): Promise<void> {
+  async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[], regime?: RegimeSnapshot): Promise<void> {
     await this.refreshWashSaleSymbols();
     await this.reconcileWithAlpaca(stocks);
 
@@ -212,7 +213,7 @@ export class ExecutionService {
     await this.cancelStaleOrders();
     await this.manageFilled(stocks);
     if (!this.enabled) return;
-    await this.evaluateNewEntries(candidates, account, reservedSymbols);
+    await this.evaluateNewEntries(candidates, account, reservedSymbols, regime);
   }
 
   /**
@@ -361,7 +362,8 @@ export class ExecutionService {
   private async evaluateNewEntries(
     candidates: TradeCandidate[],
     account: AccountState,
-    reservedSymbols: Set<string>
+    reservedSymbols: Set<string>,
+    regime?: RegimeSnapshot,
   ): Promise<void> {
     // Rebuild rejection map each cycle so stale entries clear naturally.
     const currentCandidateSymbols = new Set(candidates.map((c) => c.symbol));
@@ -399,7 +401,7 @@ export class ExecutionService {
         }
       }
 
-      const filterResult = tradeFilterService.filterCandidate(candidate, account);
+      const filterResult = tradeFilterService.filterCandidate(candidate, account, regime);
       if (!filterResult.passed) {
         this.recordRejection(candidate, filterResult.reason ?? 'unknown');
         continue;

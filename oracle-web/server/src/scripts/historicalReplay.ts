@@ -12,6 +12,17 @@ import {
 } from '../services/ruleEngineService.js';
 import type { Bar } from '../services/indicatorService.js';
 import type { CycleRecord, RecordedItem, RecordedDecision } from '../services/recordingService.js';
+import { sectorMapService } from '../services/sectorMapService.js';
+import { tradeHistoryService } from '../services/tradeHistoryService.js';
+import {
+  computeMarketRegime,
+  computeSectorRegime,
+  computeTickerRegime,
+  type RegimeSnapshot,
+  type SectorRegime,
+  type TickerRegime,
+} from '../services/regimeService.js';
+import type { TradeLedgerEntry } from '../services/executionService.js';
 
 const LEVELS_DIR = 'F:/oracle_data/levels';
 const ET = 'America/New_York';
@@ -80,7 +91,12 @@ function etWallToUtcMs(day: string, hour: number, minute: number): number {
   return fromZonedTime(`${day}T${hh}:${mm}:00`, ET).getTime();
 }
 
-async function fetchBarsBatch(symbols: string[], startIso: string, endIso: string): Promise<Record<string, RawBar[]>> {
+async function fetchBarsWithTimeframe(
+  symbols: string[],
+  timeframe: string,
+  startIso: string,
+  endIso: string,
+): Promise<Record<string, RawBar[]>> {
   if (!alpacaApiKeyId || !alpacaApiSecretKey) fail('APCA_API_KEY_ID / APCA_API_SECRET_KEY not set');
   const out: Record<string, RawBar[]> = Object.fromEntries(symbols.map((s) => [s, []]));
   let pageToken: string | undefined;
@@ -88,7 +104,7 @@ async function fetchBarsBatch(symbols: string[], startIso: string, endIso: strin
   while (true) {
     const params = new URLSearchParams({
       symbols: symbols.join(','),
-      timeframe: '1Min',
+      timeframe,
       start: startIso,
       end: endIso,
       feed: alpacaDataFeed || 'iex',
@@ -103,7 +119,11 @@ async function fetchBarsBatch(symbols: string[], startIso: string, endIso: strin
         'APCA-API-SECRET-KEY': alpacaApiSecretKey,
       },
     });
-    if (!res.ok) fail(`Alpaca ${res.status}: ${await res.text()}`);
+    if (!res.ok) {
+      // Non-fatal: return what we have so far (e.g. ETF not on IEX feed).
+      console.error(`Alpaca ${res.status} fetching [${symbols.join(',')}] timeframe=${timeframe}: ${await res.text()}`);
+      return out;
+    }
     const data = (await res.json()) as { bars: Record<string, RawBar[]>; next_page_token: string | null };
     for (const [sym, bars] of Object.entries(data.bars ?? {})) {
       out[sym] = (out[sym] ?? []).concat(bars);
@@ -154,6 +174,64 @@ function toRecordedItem(s: StockState, floatMillions: number | null): RecordedIt
   };
 }
 
+// ---------------------------------------------------------------------------
+// Helpers for slicing minute-aligned bars into Bar[] for regime computers
+// ---------------------------------------------------------------------------
+
+function extractMinuteWindow(
+  m: Map<number, CachedBar>,
+  tMs: number,
+  windowMin: number,
+): Bar[] {
+  const out: Bar[] = [];
+  for (let offset = windowMin - 1; offset >= 0; offset--) {
+    const bar = m.get(tMs - offset * 60_000);
+    if (!bar) continue;
+    out.push({
+      timestamp: new Date(bar.ts),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    });
+  }
+  return out;
+}
+
+function extractBarsFromStart(
+  m: Map<number, CachedBar>,
+  startMs: number,
+  endMs: number,
+): Bar[] {
+  const out: Bar[] = [];
+  for (const b of m.values()) {
+    if (b.ts >= startMs && b.ts <= endMs) {
+      out.push({
+        timestamp: new Date(b.ts),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volume: b.volume,
+      });
+    }
+  }
+  out.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  return out;
+}
+
+function vxxBarsToBar(raw: RawBar[]): Bar[] {
+  return raw.map((b) => ({
+    timestamp: new Date(b.t),
+    open: b.o,
+    high: b.h,
+    low: b.l,
+    close: b.c,
+    volume: b.v,
+  }));
+}
+
 async function main(): Promise<void> {
   const { day } = parseArgs();
   const levels = loadLevels(day);
@@ -165,8 +243,9 @@ async function main(): Promise<void> {
   const premarketStartMs = etWallToUtcMs(day, 4, 0);
 
   console.error(`fetching ${symbols.length} symbols, ${day} 04:00–16:00 ET`);
-  const barsRaw = await fetchBarsBatch(
+  const barsRaw = await fetchBarsWithTimeframe(
     symbols,
+    '1Min',
     new Date(premarketStartMs).toISOString(),
     new Date(rthEndMs).toISOString(),
   );
@@ -210,6 +289,80 @@ async function main(): Promise<void> {
     cumulativeVolume[sym] = 0;
   }
 
+  // ---------------------------------------------------------------------------
+  // Regime up-front fetches
+  // ---------------------------------------------------------------------------
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  // Resolve sector per symbol (may call Finnhub; results are cached on disk).
+  console.error('resolving sectors for watchlist symbols...');
+  const sectorBySymbol = new Map<string, string>();
+  for (const sym of symbols) {
+    sectorBySymbol.set(sym, await sectorMapService.getSectorFor(sym));
+  }
+
+  const distinctEtfs = Array.from(new Set(
+    Array.from(sectorBySymbol.values()).map((s) => sectorMapService.getEtfFor(s)),
+  ));
+
+  // Fetch SPY + sector ETFs as 1m over the same RTH window as the watchlist.
+  const etfSymbolsForMinuteFetch = Array.from(new Set(['SPY', ...distinctEtfs]));
+  console.error(`fetching 1m bars for ETFs: ${etfSymbolsForMinuteFetch.join(', ')}`);
+  const etfRaw = await fetchBarsWithTimeframe(
+    etfSymbolsForMinuteFetch,
+    '1Min',
+    new Date(premarketStartMs).toISOString(),
+    new Date(rthEndMs).toISOString(),
+  );
+  const etfBarsByMs: Record<string, Map<number, CachedBar>> = {};
+  for (const etf of etfSymbolsForMinuteFetch) {
+    etfBarsByMs[etf] = indexBars(etfRaw[etf] ?? []);
+  }
+
+  // VXX as 1Day: fetch 3 days ending at RTH start of replay day.
+  console.error('fetching VXX daily bars (3 days)...');
+  const vxxDailyRaw = await fetchBarsWithTimeframe(
+    ['VXX'],
+    '1Day',
+    new Date(rthStartMs - 3 * DAY_MS).toISOString(),
+    new Date(rthStartMs).toISOString(),
+  );
+
+  // Watchlist daily bars (30 days prior to replay day).
+  console.error('fetching watchlist daily bars (30 days)...');
+  const dailyRaw = await fetchBarsWithTimeframe(
+    symbols,
+    '1Day',
+    new Date(rthStartMs - 30 * DAY_MS).toISOString(),
+    new Date(rthStartMs).toISOString(),
+  );
+  const dailyBars: Record<string, Bar[]> = {};
+  for (const sym of symbols) {
+    dailyBars[sym] = (dailyRaw[sym] ?? []).map((b) => ({
+      timestamp: new Date(b.t),
+      open: b.o,
+      high: b.h,
+      low: b.l,
+      close: b.c,
+      volume: b.v,
+    }));
+  }
+
+  // Prior-day closed trades (no lookahead — tradeHistoryService reads only day < now).
+  console.error('loading prior-day trade history...');
+  const historyBySymbol = new Map<string, TradeLedgerEntry[]>();
+  for (const sym of symbols) {
+    const history = await tradeHistoryService.getRecentTrades(
+      sym,
+      'orb_breakout',
+      new Date(`${day}T00:00:00Z`),
+    );
+    historyBySymbol.set(sym, history);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Replay loop
+  // ---------------------------------------------------------------------------
   const cycles: CycleRecord[] = [];
   let candidateCount = 0;
   let setupCounts: Record<string, number> = {};
@@ -219,6 +372,43 @@ async function main(): Promise<void> {
     const tsEt = formatInTimeZone(new Date(tMs), ET, 'HH:mm:ss');
     const items: RecordedItem[] = [];
     const decisions: RecordedDecision[] = [];
+
+    // Build per-minute regime snapshot (shared across all symbols this minute).
+    const spyBarsForMinute = etfBarsByMs['SPY']
+      ? extractMinuteWindow(etfBarsByMs['SPY'], tMs, 30)
+      : [];
+    const vxxBars = vxxBarsToBar(vxxDailyRaw['VXX'] ?? []);
+    const sectorBarsByEtf: Record<string, Bar[]> = {};
+    for (const etf of distinctEtfs) {
+      const m = etfBarsByMs[etf];
+      if (m) sectorBarsByEtf[etf] = extractMinuteWindow(m, tMs, 30);
+    }
+
+    const market = computeMarketRegime(spyBarsForMinute, vxxBars, new Date(tMs));
+    const sectors: Record<string, SectorRegime> = {};
+    for (const [etf, bars] of Object.entries(sectorBarsByEtf)) {
+      sectors[etf] = computeSectorRegime(bars, etf, new Date(tMs));
+    }
+    const tickers: Record<string, TickerRegime> = {};
+    for (const sym of symbols) {
+      const todayBars = extractBarsFromStart(barsByMs[sym] ?? new Map(), rthStartMs, tMs);
+      const sector = sectorBySymbol.get(sym) ?? 'unknown';
+      tickers[sym] = computeTickerRegime(
+        sym,
+        'orb_breakout',
+        dailyBars[sym] ?? [],
+        todayBars,
+        historyBySymbol.get(sym) ?? [],
+        sector,
+        new Date(tMs),
+      );
+    }
+    const snapshot: RegimeSnapshot = {
+      ts: new Date(tMs).toISOString(),
+      market,
+      sectors,
+      tickers,
+    };
 
     for (const sym of symbols) {
       const lv = levels.tickers[sym];
@@ -274,6 +464,7 @@ async function main(): Promise<void> {
         emptyMessageContext(sym),
         emptyRedCandleSignal(),
         orbSignal,
+        snapshot,
       );
       if (candidate) {
         decisions.push({
@@ -300,6 +491,7 @@ async function main(): Promise<void> {
       decisions,
       activeTrades: [],
       closedTrades: [],
+      regime: snapshot,
     });
   }
 

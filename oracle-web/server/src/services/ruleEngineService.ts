@@ -4,6 +4,7 @@ import { fetchAlpaca1MinBars } from './alpacaBarService.js';
 import { Bar } from './indicatorService.js';
 import { SymbolMessageContext, messageService, SetupTag } from './messageService.js';
 import { config } from '../config.js';
+import type { RegimeSnapshot } from './regimeService.js';
 
 export type CandidateSetup =
   | 'red_candle_theory'
@@ -192,11 +193,11 @@ export function computeOrbSignal(stock: StockState, bars: Bar[], now: Date): Orb
 }
 
 class RuleEngineService {
-  async getRankedCandidates(stocks: StockState[], limit = 10): Promise<TradeCandidate[]> {
+  async getRankedCandidates(stocks: StockState[], limit = 10, regime?: RegimeSnapshot): Promise<TradeCandidate[]> {
     const evaluated = await Promise.all(
       stocks.map(async (stock) => {
         const messageContext = messageService.getSymbolContext(stock.symbol);
-        return this.evaluateStock(stock, messageContext);
+        return this.evaluateStock(stock, messageContext, regime);
       })
     );
 
@@ -206,12 +207,12 @@ class RuleEngineService {
     return candidates.slice(0, Math.max(1, Math.min(limit, 100)));
   }
 
-  private async evaluateStock(stock: StockState, messageContext: SymbolMessageContext): Promise<TradeCandidate | null> {
+  private async evaluateStock(stock: StockState, messageContext: SymbolMessageContext, regime?: RegimeSnapshot): Promise<TradeCandidate | null> {
     const [redCandleSignal, orbSignal] = await Promise.all([
       this.detectRedCandleTheory(stock),
       this.detectOrbBreakout(stock),
     ]);
-    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal);
+    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal, regime);
   }
 
   /**
@@ -225,6 +226,7 @@ class RuleEngineService {
     messageContext: SymbolMessageContext,
     redCandleSignal: RedCandleSignal,
     orbSignal: OrbSignal = emptyOrbSignal(),
+    regime?: RegimeSnapshot,
   ): TradeCandidate | null {
     const oracleScore = this.scoreOracle(stock);
     const messageScore = Math.min(100, messageContext.convictionScore);
@@ -236,6 +238,19 @@ class RuleEngineService {
     }
     if (orbSignal.matched) {
       weighted += 6;
+    }
+
+    if (regime && config.execution.regime.enabled) {
+      const cfg = config.execution.regime;
+      const tickerRegime = regime.tickers[stock.symbol];
+      const sectorRegime = tickerRegime
+        ? this.findSectorRegimeForTicker(regime, tickerRegime.sector)
+        : undefined;
+      const composite =
+        cfg.market_weight * (regime.market.score ?? 0) +
+        cfg.sector_weight * (sectorRegime?.score ?? 0) +
+        cfg.ticker_weight * (tickerRegime?.score ?? 0);
+      weighted += composite * cfg.score_weight;
     }
 
     const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal, orbSignal);
@@ -447,6 +462,22 @@ class RuleEngineService {
     // momentum_max_chase_pct above. Reject if we're chasing too hard.
     const pctAbove = (current - buy) / buy;
     return pctAbove <= config.execution.momentum_max_chase_pct;
+  }
+
+  private findSectorRegimeForTicker(regime: RegimeSnapshot, sector: string) {
+    const etf = this.etfForSector(sector);
+    return regime.sectors[etf];
+  }
+
+  private etfForSector(sector: string): string {
+    const map: Record<string, string> = {
+      materials: 'XLB', communications: 'XLC', energy: 'XLE', financials: 'XLF',
+      industrials: 'XLI', technology: 'XLK', software: 'IGV',
+      consumer_staples: 'XLP', real_estate: 'XLRE', utilities: 'XLU',
+      healthcare: 'XLV', consumer_discretionary: 'XLY', biotechnology: 'XBI',
+      unknown: 'SPY',
+    };
+    return map[sector] ?? 'SPY';
   }
 
   private async detectOrbBreakout(stock: StockState): Promise<OrbSignal> {

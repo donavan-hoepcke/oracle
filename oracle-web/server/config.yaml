@@ -54,6 +54,7 @@ execution:
   enabled: true
   paper: true
   risk_per_trade: 100
+  max_trade_cost: 100
   max_positions: 8
   max_capital_pct: 0.50
   max_daily_drawdown_pct: 0.05
@@ -78,6 +79,24 @@ execution:
   trailing_mfe_activate_r: 0.5
   trailing_mfe_giveback_pct: 0.5
   eod_flatten_time: "15:50"
+  regime:
+    enabled: false
+    score_weight: 10
+    market_weight: 0.5
+    sector_weight: 0.2
+    ticker_weight: 0.3
+    spy_trend_normalize_pct: 0.005
+    vxx_roc_normalize_pct: 0.05
+    sector_trend_normalize_pct: 0.01
+    veto_market_spy_trend_pct: -0.01
+    veto_market_vxx_roc_pct: 0.05
+    veto_graveyard_min_sample: 5
+    veto_exhaustion_atr_ratio: 3.0
+    winrate_min_sample: 3
+    atr_penalty_ratio: 2.5
+    sector_etf_bars_lookback_min: 30
+    trade_history_max_trades: 20
+    trade_history_max_calendar_days: 30
 market_hours:
   open: "09:30"
   close: "16:00"

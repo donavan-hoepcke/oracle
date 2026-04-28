@@ -57,6 +57,8 @@ type WebSocketMessage =
 import { ruleEngineService } from '../services/ruleEngineService.js';
 import { executionService, ActiveTrade } from '../services/executionService.js';
 import { recordingService } from '../services/recordingService.js';
+import { regimeService } from '../services/regimeService.js';
+import type { RegimeSnapshot } from '../services/regimeService.js';
 
 class PriceSocketServer {
   private wss: WebSocketServer | null = null;
@@ -337,10 +339,26 @@ class PriceSocketServer {
       });
     }
 
+    // Build regime snapshot once per cycle (symbols, setup-agnostic for v1).
+    let regimeSnapshot: RegimeSnapshot | null = null;
+    if (config.execution.regime.enabled) {
+      try {
+        const symbols = Array.from(this.stockStates.keys());
+        regimeSnapshot = await regimeService.buildRegimeSnapshot(symbols, 'orb_breakout', new Date());
+      } catch (err) {
+        console.error('Regime snapshot build failed:', err);
+        regimeSnapshot = null;
+      }
+    }
+
     // Get ranked candidates for alerts and execution
     let candidates: Awaited<ReturnType<typeof ruleEngineService.getRankedCandidates>> = [];
     try {
-      candidates = await ruleEngineService.getRankedCandidates(Array.from(this.stockStates.values()), 20);
+      candidates = await ruleEngineService.getRankedCandidates(
+        Array.from(this.stockStates.values()),
+        20,
+        regimeSnapshot ?? undefined,
+      );
       for (const candidate of candidates) {
         // Only alert for top-scoring setups, score threshold can be tuned
         if (
@@ -378,7 +396,11 @@ class PriceSocketServer {
     // Run execution engine
     if (config.execution.enabled) {
       try {
-        await executionService.onPriceCycle(candidates, Array.from(this.stockStates.values()));
+        await executionService.onPriceCycle(
+          candidates,
+          Array.from(this.stockStates.values()),
+          regimeSnapshot ?? undefined,
+        );
         this.broadcast({
           type: 'trade_update',
           data: {
@@ -400,6 +422,7 @@ class PriceSocketServer {
         activeTrades: executionService.getActiveTrades(),
         closedTrades: executionService.getLedger(),
         marketStatus,
+        regime: regimeSnapshot,
       });
     } catch (err) {
       console.error('Recording write error:', err);

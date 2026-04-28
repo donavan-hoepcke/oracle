@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { TradeCandidate as BaseTradeCandidate } from './ruleEngineService.js';
+import type { RegimeSnapshot } from './regimeService.js';
 
 type TradeCandidate = BaseTradeCandidate & {
   suggestedEntry: number;
@@ -28,7 +29,11 @@ export interface PositionSize {
 }
 
 class TradeFilterService {
-  filterCandidate(candidate: TradeCandidate, account: AccountState): FilterResult {
+  filterCandidate(
+    candidate: TradeCandidate,
+    account: AccountState,
+    regime?: RegimeSnapshot,
+  ): FilterResult {
     const exec = config.execution;
 
     const dailyLoss = account.dailyRealizedPnl + account.dailyUnrealizedPnl;
@@ -57,6 +62,46 @@ class TradeFilterService {
       }
     }
 
+    if (regime && exec.regime?.enabled) {
+      const vetoResult = this.runRegimeVetos(candidate, regime);
+      if (!vetoResult.passed) return vetoResult;
+    }
+
+    return { passed: true, reason: null };
+  }
+
+  private runRegimeVetos(candidate: TradeCandidate, regime: RegimeSnapshot): FilterResult {
+    const cfg = config.execution.regime;
+
+    const m = regime.market;
+    if (
+      m.spyTrendPct !== null &&
+      m.vxxRocPct !== null &&
+      m.spyTrendPct <= cfg.veto_market_spy_trend_pct &&
+      m.vxxRocPct >= cfg.veto_market_vxx_roc_pct
+    ) {
+      return {
+        passed: false,
+        reason: `market panic (SPY ${(m.spyTrendPct * 100).toFixed(2)}% / VXX ${(m.vxxRocPct * 100).toFixed(2)}%)`,
+      };
+    }
+
+    const tr = regime.tickers[candidate.symbol];
+    if (tr) {
+      if (tr.sampleSize >= cfg.veto_graveyard_min_sample && tr.winRate === 0) {
+        return {
+          passed: false,
+          reason: `ticker+setup graveyard (0/${tr.sampleSize} on ${candidate.setup})`,
+        };
+      }
+      if (tr.atrRatio !== null && tr.atrRatio >= cfg.veto_exhaustion_atr_ratio) {
+        return {
+          passed: false,
+          reason: `exhaustion (ATR ratio ${tr.atrRatio.toFixed(2)})`,
+        };
+      }
+    }
+
     return { passed: true, reason: null };
   }
 
@@ -66,19 +111,22 @@ class TradeFilterService {
     const stop = candidate.suggestedStop;
     const riskPerShare = Math.round((entry - stop) * 1e8) / 1e8;
 
-    if (riskPerShare <= 0) {
+    if (riskPerShare <= 0 || entry <= 0) {
       return { shares: 0, costBasis: 0 };
     }
 
-    const shares = Math.floor(exec.risk_per_trade / riskPerShare);
-    const costBasis = shares * entry;
+    const riskSizedShares = Math.floor(exec.risk_per_trade / riskPerShare);
+    const maxDeployable = Math.max(0, account.cash * exec.max_capital_pct - account.deployedCapital);
+    const capitalCapShares = Math.floor(maxDeployable / entry);
+    const tradeCostCapShares = exec.max_trade_cost > 0
+      ? Math.floor(exec.max_trade_cost / entry)
+      : Number.POSITIVE_INFINITY;
 
-    const maxDeployable = account.cash * exec.max_capital_pct - account.deployedCapital;
-    if (costBasis > maxDeployable || shares < 1) {
+    const shares = Math.min(riskSizedShares, capitalCapShares, tradeCostCapShares);
+    if (shares < 1) {
       return { shares: 0, costBasis: 0 };
     }
-
-    return { shares, costBasis };
+    return { shares, costBasis: shares * entry };
   }
 }
 

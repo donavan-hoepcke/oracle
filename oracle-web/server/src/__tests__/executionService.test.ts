@@ -6,6 +6,7 @@ vi.mock('../config.js', () => ({
       enabled: true,
       paper: true,
       risk_per_trade: 100,
+      max_trade_cost: 0,
       max_positions: 8,
       max_capital_pct: 0.5,
       max_daily_drawdown_pct: 0.05,

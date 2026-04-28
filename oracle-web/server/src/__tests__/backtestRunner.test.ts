@@ -6,6 +6,7 @@ vi.mock('../config.js', () => ({
       enabled: true,
       paper: true,
       risk_per_trade: 100,
+      max_trade_cost: 0,
       max_positions: 8,
       max_capital_pct: 0.5,
       max_daily_drawdown_pct: 0.5,
@@ -23,6 +24,13 @@ vi.mock('../config.js', () => ({
       trailing_start_r: 2.0,
       trailing_distance_r: 1.0,
       eod_flatten_time: '15:50',
+      regime: {
+        enabled: true,
+        veto_market_spy_trend_pct: -0.01,
+        veto_market_vxx_roc_pct: 0.05,
+        veto_graveyard_min_sample: 5,
+        veto_exhaustion_atr_ratio: 3.0,
+      },
     },
     market_hours: { timezone: 'America/New_York' },
   },
@@ -34,6 +42,7 @@ import type {
   RecordedItem,
   RecordedDecision,
 } from '../services/recordingService.js';
+import type { RegimeSnapshot } from '../services/regimeService.js';
 
 function makeItem(
   symbol: string,
@@ -288,5 +297,132 @@ describe('BacktestRunner', () => {
     const result = runner.runCycles(cycles, { startingCash: 5000 });
     expect(result.trades.length).toBeGreaterThanOrEqual(1);
     expect(result.skipped.some((s) => s.reason === 'insufficient capital')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regime veto tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Produces a CycleRecord with a single candidate whose levels guarantee a
+ * trade opens on the first (and only) cycle when no veto applies.
+ *
+ * entry=1.0, stop=0.95 (5% risk — within max_risk_pct=10%), target=1.15
+ * The riskPerShare=0.05, shares=100/0.05=2000, cost=$2000.
+ * With startingCash=10000 and max_capital_pct=0.5 → maxDeploy=$5000 → fits.
+ */
+function makeCycleWithCandidate(
+  symbol: string,
+  overrides: { regime?: RegimeSnapshot } = {},
+): CycleRecord {
+  const [hh, mm] = ['09', '30'].map(Number);
+  const ts = new Date(Date.UTC(2026, 3, 17, hh + 4, mm, 0)).toISOString();
+  const item: RecordedItem = {
+    symbol,
+    currentPrice: 1.0,
+    lastPrice: 1.0,
+    changePercent: 0,
+    stopPrice: 0.95,
+    buyZonePrice: 1.0,
+    sellZonePrice: 1.15,
+    profitDeltaPct: null,
+    maxVolume: null,
+    premarketVolume: null,
+    relativeVolume: null,
+    floatMillions: null,
+    signal: null,
+    trend30m: 'up',
+    boxTop: null,
+    boxBottom: null,
+  };
+  const decision: RecordedDecision = {
+    symbol,
+    kind: 'candidate',
+    setup: 'orb_breakout',
+    score: 80,
+    rationale: ['test candidate'],
+    suggestedEntry: 1.0,
+    suggestedStop: 0.95,
+    suggestedTarget: 1.15,
+  };
+  return {
+    ts,
+    tsEt: '09:30:00',
+    tradingDay: '2026-04-17',
+    marketStatus: { isOpen: true, openTime: '09:30', closeTime: '16:00' },
+    items: [item],
+    decisions: [decision],
+    activeTrades: [],
+    closedTrades: [],
+    regime: overrides.regime ?? null,
+  };
+}
+
+describe('BacktestRunner regime vetos', () => {
+  const backtestRunner = new BacktestRunner();
+
+  function makeRegime(overrides: {
+    spyTrendPct?: number | null;
+    vxxRocPct?: number | null;
+    tickerAtrRatio?: number | null;
+    winRate?: number | null;
+    sampleSize?: number;
+    symbol?: string;
+  } = {}): RegimeSnapshot {
+    const symbol = overrides.symbol ?? 'ABC';
+    return {
+      ts: '2026-04-17T13:30:00Z',
+      market: {
+        score: 0,
+        spyTrendPct: overrides.spyTrendPct ?? 0,
+        vxxRocPct: overrides.vxxRocPct ?? 0,
+        status: 'ok',
+      },
+      sectors: {},
+      tickers: {
+        [symbol]: {
+          score: 0,
+          sector: 'energy',
+          atrRatio: overrides.tickerAtrRatio ?? 1.0,
+          winRate: overrides.winRate ?? 0.5,
+          sampleSize: overrides.sampleSize ?? 4,
+          status: 'ok',
+        },
+      },
+    };
+  }
+
+  it('blocks entry when regime flags market panic', () => {
+    const cycle = makeCycleWithCandidate('ABC', { regime: makeRegime({ spyTrendPct: -0.02, vxxRocPct: 0.07 }) });
+    const result = backtestRunner.runCycles([cycle]);
+    expect(result.trades).toHaveLength(0);
+    expect(result.skipped.some((s) => /market panic/.test(s.reason))).toBe(true);
+  });
+
+  it('blocks entry when regime flags graveyard', () => {
+    const cycle = makeCycleWithCandidate('ABC', { regime: makeRegime({ winRate: 0, sampleSize: 5 }) });
+    const result = backtestRunner.runCycles([cycle]);
+    expect(result.trades).toHaveLength(0);
+    expect(result.skipped.some((s) => /graveyard/.test(s.reason))).toBe(true);
+  });
+
+  it('blocks entry when regime flags exhaustion', () => {
+    const cycle = makeCycleWithCandidate('ABC', { regime: makeRegime({ tickerAtrRatio: 3.5 }) });
+    const result = backtestRunner.runCycles([cycle]);
+    expect(result.trades).toHaveLength(0);
+    expect(result.skipped.some((s) => /exhaustion/.test(s.reason))).toBe(true);
+  });
+
+  it('admits entry when regime is benign', () => {
+    const cycle = makeCycleWithCandidate('ABC', { regime: makeRegime({ tickerAtrRatio: 1.0, winRate: 0.6, sampleSize: 5 }) });
+    const result = backtestRunner.runCycles([cycle]);
+    expect(result.trades.length).toBeGreaterThan(0);
+  });
+
+  it('admits entry when regime absent (legacy cycles)', () => {
+    const cycle = makeCycleWithCandidate('ABC'); // no regime
+    const result = backtestRunner.runCycles([cycle]);
+    expect(result.trades.length).toBeGreaterThan(0);
   });
 });

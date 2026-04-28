@@ -1,0 +1,6 @@
+# Hand-curated overrides for tickers Finnhub misclassifies.
+# Key = symbol, value = canonical sector (lower-case).
+# Canonical sectors: materials, communications, energy, financials, industrials,
+# technology, consumer_staples, real_estate, utilities, healthcare,
+# consumer_discretionary, biotechnology, software, unknown
+overrides: {}
