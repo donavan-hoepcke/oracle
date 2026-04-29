@@ -1,5 +1,4 @@
 import { useWebSocket } from './hooks/useWebSocket';
-import { useNotifications } from './hooks/useNotifications';
 import { useSignals } from './hooks/useSignals';
 import { useJournal } from './hooks/useJournal';
 import { useScanner } from './hooks/useScanner';
@@ -19,8 +18,7 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
 }
 
 function App() {
-  const { stocks, marketStatus, botStatus, isConnected, lastUpdate, alerts, clearAlert } =
-    useWebSocket();
+  const { stocks, marketStatus, botStatus, isConnected, lastUpdate } = useWebSocket();
   const {
     snapshot: signalsSnapshot,
     isLoading: signalsLoading,
@@ -39,8 +37,6 @@ function App() {
     error: scannerError,
     refresh: scannerRefresh,
   } = useScanner();
-
-  const { hasPermission, requestPermission } = useNotifications(alerts, clearAlert);
 
   const startScraper = async () => {
     try {
@@ -128,8 +124,6 @@ function App() {
         isConnected={isConnected}
         lastUpdate={lastUpdate}
         stockCount={stocks.length}
-        hasNotificationPermission={hasPermission}
-        onRequestPermission={requestPermission}
       />
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">

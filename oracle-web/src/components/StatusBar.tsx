@@ -6,8 +6,6 @@ interface StatusBarProps {
   isConnected: boolean;
   lastUpdate: Date | null;
   stockCount: number;
-  hasNotificationPermission: boolean;
-  onRequestPermission: () => void;
 }
 
 export function StatusBar({
@@ -16,8 +14,6 @@ export function StatusBar({
   isConnected,
   lastUpdate,
   stockCount,
-  hasNotificationPermission,
-  onRequestPermission,
 }: StatusBarProps) {
   return (
     <div className="bg-gray-800 text-white px-4 py-2 flex items-center justify-between text-sm">
@@ -68,15 +64,6 @@ export function StatusBar({
       </div>
 
       <div className="flex items-center gap-4">
-        {!hasNotificationPermission && (
-          <button
-            onClick={onRequestPermission}
-            className="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs"
-          >
-            Enable Notifications
-          </button>
-        )}
-
         {lastUpdate && (
           <span className="text-gray-400 text-xs">
             Last update: {lastUpdate.toLocaleTimeString()}
