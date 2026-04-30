@@ -18,11 +18,27 @@ vi.mock('../config.js', () => ({
         veto_graveyard_min_sample: 5,
         veto_exhaustion_atr_ratio: 3.0,
       },
+      float_rotation: {
+        enabled: true,
+        score_bump_base: 10,
+        score_bump_prime: 5,
+        prime_band_min: 1.0,
+        prime_band_max: 3.0,
+        veto_rotation_max: 7.0,
+        max_age_seconds: 600,
+      },
     },
   },
 }));
 
+vi.mock('../services/floatMapService.js', () => ({
+  floatMapService: {
+    getEntryForSymbol: vi.fn().mockReturnValue(null),
+  },
+}));
+
 import { tradeFilterService, AccountState } from '../services/tradeFilterService.js';
+import { floatMapService } from '../services/floatMapService.js';
 import { TradeCandidate } from '../services/ruleEngineService.js';
 
 function makeCandidate(overrides: Partial<TradeCandidate> & { suggestedEntry: number; suggestedStop: number }): TradeCandidate {
@@ -261,6 +277,35 @@ describe('TradeFilterService', () => {
     });
 
     it('no-ops when regime undefined (preserves legacy behavior)', () => {
+      const candidate = makeCandidate({ suggestedEntry: 1.0, suggestedStop: 0.95 });
+      const result = tradeFilterService.filterCandidate(candidate, makeAccount());
+      expect(result.passed).toBe(true);
+    });
+  });
+
+  describe('float-rotation veto', () => {
+    it('rejects when rotation exceeds blow-off cap', () => {
+      vi.mocked(floatMapService.getEntryForSymbol).mockReturnValue({
+        symbol: 'TEST', rotation: 8.5, last: 1.0, floatMillions: 5, nextOracleSupport: null, nextOracleResistance: null,
+      });
+      const candidate = makeCandidate({ suggestedEntry: 1.0, suggestedStop: 0.95 });
+      const result = tradeFilterService.filterCandidate(candidate, makeAccount());
+      expect(result.passed).toBe(false);
+      expect(result.reason).toContain('float blow-off');
+      expect(result.reason).toContain('8.5x');
+    });
+
+    it('passes at rotation just under the cap', () => {
+      vi.mocked(floatMapService.getEntryForSymbol).mockReturnValue({
+        symbol: 'TEST', rotation: 6.9, last: 1.0, floatMillions: 5, nextOracleSupport: null, nextOracleResistance: null,
+      });
+      const candidate = makeCandidate({ suggestedEntry: 1.0, suggestedStop: 0.95 });
+      const result = tradeFilterService.filterCandidate(candidate, makeAccount());
+      expect(result.passed).toBe(true);
+    });
+
+    it('passes when symbol is absent from FloatMAP (no signal)', () => {
+      vi.mocked(floatMapService.getEntryForSymbol).mockReturnValue(null);
       const candidate = makeCandidate({ suggestedEntry: 1.0, suggestedStop: 0.95 });
       const result = tradeFilterService.filterCandidate(candidate, makeAccount());
       expect(result.passed).toBe(true);

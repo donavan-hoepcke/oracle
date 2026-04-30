@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../config.js', () => ({
   config: {
@@ -17,8 +17,25 @@ vi.mock('../config.js', () => ({
       orb_volume_mult: 1.3,
       orb_max_chase_pct: 0.03,
       orb_min_range_pct: 0.01,
+      float_rotation: {
+        enabled: true,
+        score_bump_base: 10,
+        score_bump_prime: 5,
+        prime_band_min: 1.0,
+        prime_band_max: 3.0,
+        veto_rotation_max: 7.0,
+        max_age_seconds: 600,
+      },
     },
   },
+}));
+
+vi.mock('../services/floatMapService.js', () => ({
+  floatMapService: {
+    getEntryForSymbol: vi.fn().mockReturnValue(null),
+  },
+  // Re-export the type as a value so `import type` keeps working at runtime.
+  // (Vitest doesn't need this typically — left here as a clarifying no-op.)
 }));
 
 import {
@@ -27,6 +44,7 @@ import {
   emptyRedCandleSignal,
   emptyOrbSignal,
 } from '../services/ruleEngineService.js';
+import { floatMapService } from '../services/floatMapService.js';
 import { StockState } from '../websocket/priceSocket.js';
 
 function makeStock(overrides: Partial<StockState>): StockState {
@@ -249,6 +267,57 @@ describe('RuleEngineService suggestedStop clamp', () => {
     expect(candidate!.setup).not.toBe('orb_breakout');
     // Sanity: emptyOrbSignal helper is exported and returns unmatched signal.
     expect(emptyOrbSignal().matched).toBe(false);
+  });
+
+  it('does not bump score when symbol is absent from FloatMAP', () => {
+    vi.mocked(floatMapService.getEntryForSymbol).mockReturnValue(null);
+    const stock = makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6 });
+    const c = ruleEngineService.scoreFromInputs(stock, emptyMessageContext(stock.symbol), emptyRedCandleSignal());
+    expect(c).not.toBeNull();
+    expect(c!.rationale.some((r) => r.includes('FloatMAP'))).toBe(false);
+  });
+
+  it('applies base bump for FloatMAP membership outside the prime band', () => {
+    // Only the TEST symbol gets a FloatMAP entry; OTHER returns null so the
+    // baseline scores without any float bump.
+    vi.mocked(floatMapService.getEntryForSymbol).mockImplementation((sym) =>
+      sym === 'TEST'
+        ? { symbol: 'TEST', rotation: 0.6, last: 2.0, floatMillions: 5, nextOracleSupport: null, nextOracleResistance: null }
+        : null,
+    );
+    const baseline = ruleEngineService.scoreFromInputs(
+      makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6, symbol: 'OTHER' }),
+      emptyMessageContext('OTHER'),
+      emptyRedCandleSignal(),
+    );
+    const withFloat = ruleEngineService.scoreFromInputs(
+      makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6 }),
+      emptyMessageContext('TEST'),
+      emptyRedCandleSignal(),
+    );
+    expect(withFloat!.score - baseline!.score).toBeCloseTo(10, 1);
+    expect(withFloat!.rationale.some((r) => r.includes('FloatMAP listed (rotation 0.6x) +10'))).toBe(true);
+    expect(withFloat!.rationale.some((r) => r.includes('Prime rotation band'))).toBe(false);
+  });
+
+  it('stacks the prime-band bonus when rotation falls in [1.0, 3.0]', () => {
+    vi.mocked(floatMapService.getEntryForSymbol).mockImplementation((sym) =>
+      sym === 'TEST'
+        ? { symbol: 'TEST', rotation: 2.4, last: 2.0, floatMillions: 5, nextOracleSupport: null, nextOracleResistance: null }
+        : null,
+    );
+    const baseline = ruleEngineService.scoreFromInputs(
+      makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6, symbol: 'OTHER' }),
+      emptyMessageContext('OTHER'),
+      emptyRedCandleSignal(),
+    );
+    const withFloat = ruleEngineService.scoreFromInputs(
+      makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6 }),
+      emptyMessageContext('TEST'),
+      emptyRedCandleSignal(),
+    );
+    expect(withFloat!.score - baseline!.score).toBeCloseTo(15, 1); // base 10 + prime 5
+    expect(withFloat!.rationale.some((r) => r.includes('Prime rotation band'))).toBe(true);
   });
 
   it('uses the red-candle signal stop verbatim when RCT matches', () => {
