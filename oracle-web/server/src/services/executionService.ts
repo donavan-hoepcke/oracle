@@ -55,6 +55,15 @@ export interface FilterRejection {
   timestamp: Date;
 }
 
+export interface FlattenResult {
+  /** Total number of trades the flatten was asked to close. */
+  requested: number;
+  /** Symbols whose closes Alpaca accepted. Local activeTrades cleared, ledger appended. */
+  succeeded: string[];
+  /** Symbols whose closes Alpaca rejected. Local activeTrades unchanged. */
+  failed: Array<{ symbol: string; error: string }>;
+}
+
 export class ExecutionService {
   private activeTrades: ActiveTrade[] = [];
   private ledger: TradeLedgerEntry[] = [];
@@ -335,12 +344,19 @@ export class ExecutionService {
     return reserved;
   }
 
-  async flattenAll(): Promise<void> {
+  async flattenAll(): Promise<FlattenResult> {
     // Snapshot first — exitTrade mutates this.activeTrades on success, so
     // iterating the live array would skip elements as it shrinks.
     const targets = [...this.activeTrades];
+    const succeeded: string[] = [];
+    const failed: Array<{ symbol: string; error: string }> = [];
     for (const trade of targets) {
-      await this.exitTrade(trade, trade.entryPrice, 'eod', 'Manual flatten or EOD close');
+      const result = await this.exitTrade(trade, trade.entryPrice, 'eod', 'Manual flatten or EOD close');
+      if (result.ok) {
+        succeeded.push(trade.symbol);
+      } else {
+        failed.push({ symbol: trade.symbol, error: result.error ?? 'unknown error' });
+      }
     }
     try {
       await alpacaOrderService.closeAllPositions();
@@ -356,14 +372,18 @@ export class ExecutionService {
     // The exitTrade calls above stamped placeholder exit prices equal to
     // entryPrice. Alpaca needs a moment to fill the closing market orders;
     // then we rewrite the ledger rows with the real fill prices.
-    await new Promise((r) => setTimeout(r, 2000));
-    const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    try {
-      const changed = await this.reconcileLedgerFromAlpaca(start);
-      if (changed > 0) console.log(`Reconciled ${changed} flatten exit(s) from Alpaca fills`);
-    } catch (err) {
-      console.warn('Post-flatten reconciliation failed:', err instanceof Error ? err.message : err);
+    if (succeeded.length > 0) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      try {
+        const changed = await this.reconcileLedgerFromAlpaca(start);
+        if (changed > 0) console.log(`Reconciled ${changed} flatten exit(s) from Alpaca fills`);
+      } catch (err) {
+        console.warn('Post-flatten reconciliation failed:', err instanceof Error ? err.message : err);
+      }
     }
+
+    return { requested: targets.length, succeeded, failed };
   }
 
   private async buildAccountState(): Promise<AccountState> {
@@ -595,7 +615,7 @@ export class ExecutionService {
     exitPrice: number,
     reason: TradeLedgerEntry['exitReason'],
     detail: string = ''
-  ): Promise<void> {
+  ): Promise<{ ok: boolean; error?: string }> {
     const previousStatus = trade.status;
     trade.status = 'exiting';
     try {
@@ -613,7 +633,7 @@ export class ExecutionService {
         `Failed to close ${trade.symbol} (reason=${reason}): ${msg}. ` +
           `Position remains open; will retry next cycle.`,
       );
-      return;
+      return { ok: false, error: msg };
     }
 
     const pnl = (exitPrice - trade.entryPrice) * trade.shares;
@@ -646,6 +666,7 @@ export class ExecutionService {
     }
 
     this.activeTrades = this.activeTrades.filter(t => t !== trade);
+    return { ok: true };
   }
 
   /**

@@ -551,8 +551,19 @@ app.post('/api/backtest/synth', botRateLimit, (req, res) => {
 
 app.post('/api/execution/flatten', botRateLimit, async (_req, res) => {
   try {
-    await executionService.flattenAll();
-    res.json({ message: 'All positions flattened', trades: executionService.getLedger().length });
+    const result = await executionService.flattenAll();
+    const allOk = result.failed.length === 0;
+    res.json({
+      ok: allOk,
+      requested: result.requested,
+      succeeded: result.succeeded,
+      failed: result.failed,
+      message: allOk
+        ? result.requested === 0
+          ? 'No positions to flatten'
+          : `Flattened ${result.succeeded.length} position${result.succeeded.length === 1 ? '' : 's'}`
+        : `Flattened ${result.succeeded.length}/${result.requested}; broker rejected ${result.failed.length}`,
+    });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to flatten' });
   }
