@@ -149,6 +149,12 @@ export class FloatMapService {
    * Attach to the debug Chrome and grab the FloatMAP iframe's rendered text.
    * Reuses an existing tab at the FloatMAP URL when present so repeated polls
    * don't flash a new tab open-and-closed in the user's Chrome window.
+   *
+   * If the existing tab's iframe has already detached (Chrome throttles
+   * inactive tabs and unloads cross-origin iframes after a while), we fall
+   * back to a full re-navigation. Without this, a long-idle tab silently
+   * starves every subsequent poll with "no frame matching ..." until the
+   * user manually refreshes.
    */
   private async fetchFrameText(): Promise<string> {
     const { chromium } = await import('playwright');
@@ -160,20 +166,32 @@ export class FloatMapService {
       const context = contexts[0];
       const existing = context.pages().find((p) => p.url().includes(fm.url));
       const page = existing ?? (await context.newPage());
+
+      const findFrame = () => page.frames().find((f) => f.url().includes(fm.frame_url_contains));
+      const pollForFrame = async (deadline: number) => {
+        let f = findFrame();
+        while (!f && Date.now() < deadline) {
+          await page.waitForTimeout(500);
+          f = findFrame();
+        }
+        return f;
+      };
+
+      // For new tabs we always have to navigate. For reused tabs, give the
+      // iframe one short window to be present (fast path: tab is alive and
+      // fresh). If it isn't, force a re-navigation to wake the iframe.
       if (!existing) {
         await page.goto(fm.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       }
-      // Poll for the iframe instead of a fixed sleep — the Amplify app's
-      // hydration time varies (5-15+ s observed). Bail out at frame_max_wait_ms.
-      const deadline = Date.now() + fm.frame_max_wait_ms;
-      let frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
-      while (!frame && Date.now() < deadline) {
-        await page.waitForTimeout(500);
-        frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
+      let frame = existing ? await pollForFrame(Date.now() + 2_000) : undefined;
+      if (!frame) {
+        await page.goto(fm.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        frame = await pollForFrame(Date.now() + fm.frame_max_wait_ms);
       }
-      if (!frame) throw new Error(`no frame matching "${fm.frame_url_contains}" within ${fm.frame_max_wait_ms} ms`);
-      // Once the frame is attached, give it a beat to render the table body
-      // before pulling innerText — frame existence != content rendered.
+      if (!frame) {
+        throw new Error(`no frame matching "${fm.frame_url_contains}" within ${fm.frame_max_wait_ms} ms`);
+      }
+      // Frame is attached; let the table body render before we read.
       await page.waitForTimeout(fm.hydration_wait_ms);
       return (await frame.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
     } finally {

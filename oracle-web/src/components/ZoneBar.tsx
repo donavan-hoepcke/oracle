@@ -9,14 +9,21 @@ interface ZoneBarProps {
 /**
  * Horizontal bar showing price position relative to stop / buy zone / sell zone.
  * Scale spans from a bit below stop to a bit above sell so markers stay inside.
+ *
+ * Buy zone is optional — when the Oracle tool doesn't publish one (sometimes
+ * "$-" comes through for the whole watchlist), we still render the bar with
+ * stop/sell/current so the user keeps the visual context. The blue Buy line
+ * just doesn't draw.
  */
 export function ZoneBar({ stop, buy, sell, current, entry }: ZoneBarProps) {
-  if (stop === null || buy === null || sell === null || current === null) {
+  if (stop === null || sell === null || current === null) {
     return <div className="text-xs text-gray-400">—</div>;
   }
-  if (!(stop < buy && buy < sell)) {
+  if (!(stop < sell)) {
     return <div className="text-xs text-gray-400">bad zone</div>;
   }
+  // Buy must sit between stop and sell when present; otherwise treat it as missing.
+  const buyOk = buy !== null && stop < buy && buy < sell;
 
   const span = sell - stop;
   const pad = span * 0.15;
@@ -27,7 +34,7 @@ export function ZoneBar({ stop, buy, sell, current, entry }: ZoneBarProps) {
   const pct = (v: number) => Math.max(0, Math.min(100, ((v - min) / range) * 100));
 
   const stopPct = pct(stop);
-  const buyPct = pct(buy);
+  const buyPct = buyOk ? pct(buy as number) : null;
   const sellPct = pct(sell);
   const currentPct = pct(current);
   const entryPct = entry !== null && entry !== undefined ? pct(entry) : null;
@@ -43,10 +50,15 @@ export function ZoneBar({ stop, buy, sell, current, entry }: ZoneBarProps) {
         style={{ left: 0, width: `${stopPct}%` }}
       />
 
-      {/* Buy zone gradient (between buy and sell): green tint */}
+      {/* Buy zone gradient (between buy and sell): green tint. When buy is
+          missing we tint the whole stop→sell span instead so the eye still
+          gets a "trade-able zone" cue. */}
       <div
         className="absolute top-0 bottom-0 bg-green-100"
-        style={{ left: `${buyPct}%`, width: `${sellPct - buyPct}%` }}
+        style={{
+          left: `${buyPct ?? stopPct}%`,
+          width: `${sellPct - (buyPct ?? stopPct)}%`,
+        }}
       />
 
       {/* Blown out (above sell): purple tint */}
@@ -62,12 +74,14 @@ export function ZoneBar({ stop, buy, sell, current, entry }: ZoneBarProps) {
         title={`Stop $${stop.toFixed(3)}`}
       />
 
-      {/* Buy zone line */}
-      <div
-        className="absolute top-0 bottom-0 w-0.5 bg-blue-600"
-        style={{ left: `${buyPct}%` }}
-        title={`Buy Zone $${buy.toFixed(3)}`}
-      />
+      {/* Buy zone line — only when the Oracle tool published a real value. */}
+      {buyPct !== null && buy !== null && (
+        <div
+          className="absolute top-0 bottom-0 w-0.5 bg-blue-600"
+          style={{ left: `${buyPct}%` }}
+          title={`Buy Zone $${buy.toFixed(3)}`}
+        />
+      )}
 
       {/* Sell zone line */}
       <div
