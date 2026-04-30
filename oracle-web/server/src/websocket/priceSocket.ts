@@ -255,6 +255,18 @@ class PriceSocketServer {
       },
     });
 
+    // Reconcile activeTrades against the broker BEFORE the market-closed
+    // early return, so a backend restart after-hours still surfaces broker
+    // positions on the dashboard and gives the EOD flatten retry path
+    // something to act on.
+    if (config.execution.enabled) {
+      try {
+        await executionService.reconcileBrokerPositions(Array.from(this.stockStates.values()));
+      } catch (err) {
+        console.error('After-hours reconcile failed:', err);
+      }
+    }
+
     // EOD flatten — must run BEFORE the market-closed early return below so
     // positions can still be flattened during the after-close window when the
     // 15:50 attempts were rejected at the broker (e.g. PDT cap, low-liquidity
