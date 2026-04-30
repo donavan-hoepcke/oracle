@@ -269,6 +269,14 @@ export function ScannerPage({
                           30d
                         </span>
                       )}
+                      {r.floatRotation !== null && (
+                        <span
+                          className="ml-1 text-[10px] px-1 rounded bg-purple-100 text-purple-800"
+                          title="On the FloatMAP list — rotation = volume / float"
+                        >
+                          {r.floatRotation.toFixed(1)}x
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       <span className={`text-xs px-2 py-0.5 rounded font-semibold ${badge.classes}`}>

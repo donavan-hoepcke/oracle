@@ -90,6 +90,23 @@ export class FloatMapService {
     return this.snapshot;
   }
 
+  /**
+   * Lookup a single ticker. Returns null when the symbol is absent OR the
+   * snapshot is older than max_age_seconds — callers must treat absent and
+   * stale identically so a silent scraper outage doesn't leak yesterday's
+   * rotation into today's decisions.
+   */
+  getEntryForSymbol(symbol: string, maxAgeSeconds: number): FloatMapEntry | null {
+    if (this.isStale(maxAgeSeconds)) return null;
+    return this.snapshot.entries.find((e) => e.symbol === symbol) ?? null;
+  }
+
+  isStale(maxAgeSeconds: number): boolean {
+    if (!this.snapshot.fetchedAt) return true;
+    const ageMs = Date.now() - new Date(this.snapshot.fetchedAt).getTime();
+    return ageMs > maxAgeSeconds * 1000;
+  }
+
   async start(): Promise<void> {
     if (!config.bot.floatmap.enabled) return;
     if (this.pollTimer) return;
@@ -145,10 +162,19 @@ export class FloatMapService {
       const page = existing ?? (await context.newPage());
       if (!existing) {
         await page.goto(fm.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-        await page.waitForTimeout(fm.hydration_wait_ms);
       }
-      const frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
-      if (!frame) throw new Error(`no frame matching "${fm.frame_url_contains}"`);
+      // Poll for the iframe instead of a fixed sleep — the Amplify app's
+      // hydration time varies (5-15+ s observed). Bail out at frame_max_wait_ms.
+      const deadline = Date.now() + fm.frame_max_wait_ms;
+      let frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
+      while (!frame && Date.now() < deadline) {
+        await page.waitForTimeout(500);
+        frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
+      }
+      if (!frame) throw new Error(`no frame matching "${fm.frame_url_contains}" within ${fm.frame_max_wait_ms} ms`);
+      // Once the frame is attached, give it a beat to render the table body
+      // before pulling innerText — frame existence != content rendered.
+      await page.waitForTimeout(fm.hydration_wait_ms);
       return (await frame.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
     } finally {
       await browser.close();

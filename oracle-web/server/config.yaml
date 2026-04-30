@@ -45,6 +45,7 @@ bot:
     poll_interval_sec: 120
     frame_url_contains: "amplifyapp.com"
     hydration_wait_ms: 8000
+    frame_max_wait_ms: 30000
   moderatorAlerts:
     enabled: true
     url: "https://university.stockstotrade.com/room/daily-market-profits"
@@ -79,6 +80,14 @@ execution:
   trailing_mfe_activate_r: 0.5
   trailing_mfe_giveback_pct: 0.5
   eod_flatten_time: "15:50"
+  float_rotation:
+    enabled: true
+    score_bump_base: 10
+    score_bump_prime: 5
+    prime_band_min: 1.0
+    prime_band_max: 3.0
+    veto_rotation_max: 7.0
+    max_age_seconds: 600
   regime:
     enabled: false
     score_weight: 10
