@@ -202,6 +202,16 @@ export class ExecutionService {
     this.enabled = enabled;
   }
 
+  /**
+   * Public hook that mirrors the broker's open positions into activeTrades.
+   * Called by the price-socket loop before the market-closed early return so
+   * the dashboard and the EOD-flatten retry path see the right state even
+   * after a backend restart that lands outside regular hours.
+   */
+  async reconcileBrokerPositions(stocks: StockState[]): Promise<void> {
+    await this.reconcileWithAlpaca(stocks);
+  }
+
   async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[], regime?: RegimeSnapshot): Promise<void> {
     await this.refreshWashSaleSymbols();
     await this.reconcileWithAlpaca(stocks);
@@ -326,7 +336,10 @@ export class ExecutionService {
   }
 
   async flattenAll(): Promise<void> {
-    for (const trade of this.activeTrades) {
+    // Snapshot first — exitTrade mutates this.activeTrades on success, so
+    // iterating the live array would skip elements as it shrinks.
+    const targets = [...this.activeTrades];
+    for (const trade of targets) {
       await this.exitTrade(trade, trade.entryPrice, 'eod', 'Manual flatten or EOD close');
     }
     try {
@@ -334,7 +347,11 @@ export class ExecutionService {
     } catch {
       // best effort
     }
-    this.activeTrades = [];
+    // NOTE: do NOT unconditionally clear activeTrades here. exitTrade already
+    // removes successfully-closed trades; trades whose closePosition was
+    // rejected by the broker (e.g. PDT cap) MUST stay in activeTrades so the
+    // next cycle retries. Wiping the list here would re-create the loop where
+    // reconcileWithAlpaca then re-adopts the still-open positions.
 
     // The exitTrade calls above stamped placeholder exit prices equal to
     // entryPrice. Alpaca needs a moment to fill the closing market orders;

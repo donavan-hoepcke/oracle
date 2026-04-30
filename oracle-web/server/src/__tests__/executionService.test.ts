@@ -352,6 +352,46 @@ describe('ExecutionService', () => {
       expect(service.getActiveTrades()).toHaveLength(1);
       expect(service.getActiveTrades()[0].symbol).toBe('BIYA');
     });
+
+    it('flattenAll keeps trades whose broker close was rejected', async () => {
+      // Reproduces the EOD flatten loop bug: every cycle wiped activeTrades
+      // unconditionally even when the broker rejected closes (PDT cap), then
+      // reconcileWithAlpaca re-adopted the same positions next tick.
+      const candidates = [
+        makeCandidate('AGAE', 0.50, 0.45, 0.94),
+        makeCandidate('BIYA', 1.41, 1.27, 2.11),
+      ];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50), makeStockState('BIYA', 1.41)]);
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50), makeStockState('BIYA', 1.41)]);
+      expect(service.getActiveTrades()).toHaveLength(2);
+
+      // One close succeeds, one rejected — only the rejected one should remain.
+      mockOrderService.closePosition.mockImplementation(async (symbol: string) => {
+        if (symbol === 'BIYA') throw new Error('Alpaca closePosition error: 403');
+      });
+      mockOrderService.closeAllPositions.mockResolvedValue(undefined);
+
+      await service.flattenAll();
+
+      const remaining = service.getActiveTrades();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].symbol).toBe('BIYA');
+      expect(remaining[0].status).toBe('filled');
+    });
+
+    it('reconcileBrokerPositions exposes the adoption path for after-hours use', async () => {
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'BEZ', qty: 41, avgEntryPrice: 2.36, currentPrice: 2.08, marketValue: 85, unrealizedPL: -11.5 },
+      ]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+
+      await service.reconcileBrokerPositions([makeStockState('BEZ', 2.08)]);
+
+      const active = service.getActiveTrades();
+      expect(active).toHaveLength(1);
+      expect(active[0].symbol).toBe('BEZ');
+    });
   });
 
   describe('wash-sale awareness', () => {
