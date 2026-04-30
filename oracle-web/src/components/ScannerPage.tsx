@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { Fragment, FormEvent, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { JournalSnapshot, ScannerRow, ScannerSnapshot, ScannerStatus } from '../types';
 import { ZoneBar } from './ZoneBar';
@@ -104,7 +104,17 @@ export function ScannerPage({
   const [hiddenStatuses, setHiddenStatuses] = useState<Set<ScannerStatus>>(new Set(['dead']));
   const [sortKey, setSortKey] = useState<'default' | 'pctChange' | 'pctToBuy'>('default');
   const [lookup, setLookup] = useState('');
+  const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
+
+  const toggleExpanded = (symbol: string) => {
+    setExpandedSymbols((prev) => {
+      const next = new Set(prev);
+      if (next.has(symbol)) next.delete(symbol);
+      else next.add(symbol);
+      return next;
+    });
+  };
 
   const submitLookup = (e: FormEvent) => {
     e.preventDefault();
@@ -240,6 +250,7 @@ export function ScannerPage({
               <tr>
                 <th className="text-left px-3 py-2">Symbol</th>
                 <th className="text-left px-3 py-2">Status</th>
+                <th className="text-right px-3 py-2">Score</th>
                 <th className="text-right px-3 py-2">Current</th>
                 <th className="text-right px-3 py-2">% Day</th>
                 <th className="text-left px-3 py-2 min-w-[200px]">Zone</th>
@@ -252,72 +263,127 @@ export function ScannerPage({
             <tbody>
               {filteredRows.map((r) => {
                 const badge = STATUS_BADGES[r.status];
+                const score = r.candidate?.score ?? r.rejection?.score ?? null;
+                const setup = r.candidate?.setup ?? r.rejection?.setup ?? null;
+                const rationale = r.candidate?.rationale ?? r.activeTrade?.rationale ?? null;
+                const expanded = expandedSymbols.has(r.symbol);
+                const canExpand = (rationale && rationale.length > 0) || !!r.rejection;
                 return (
-                  <tr key={r.symbol} className="border-t border-gray-100 hover:bg-gray-50">
-                    <td className="px-3 py-2 font-semibold">
-                      <Link
-                        to={`/symbol/${r.symbol}`}
-                        className="text-blue-700 hover:underline"
-                      >
-                        {r.symbol}
-                      </Link>
-                      {r.washSaleRisk && (
-                        <span
-                          className="ml-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800"
-                          title="Traded in last 30 days — tighter entry bar applies (wash-sale awareness)"
+                  <Fragment key={r.symbol}>
+                    <tr className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="px-3 py-2 font-semibold">
+                        <Link
+                          to={`/symbol/${r.symbol}`}
+                          className="text-blue-700 hover:underline"
                         >
-                          30d
+                          {r.symbol}
+                        </Link>
+                        {r.washSaleRisk && (
+                          <span
+                            className="ml-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800"
+                            title="Traded in last 30 days — tighter entry bar applies (wash-sale awareness)"
+                          >
+                            30d
+                          </span>
+                        )}
+                        {r.floatRotation !== null && (
+                          <span
+                            className="ml-1 text-[10px] px-1 rounded bg-purple-100 text-purple-800"
+                            title="On the FloatMAP list — rotation = volume / float"
+                          >
+                            {r.floatRotation.toFixed(1)}x
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={`text-xs px-2 py-0.5 rounded font-semibold ${badge.classes}`}>
+                          {badge.label}
                         </span>
-                      )}
-                      {r.floatRotation !== null && (
-                        <span
-                          className="ml-1 text-[10px] px-1 rounded bg-purple-100 text-purple-800"
-                          title="On the FloatMAP list — rotation = volume / float"
-                        >
-                          {r.floatRotation.toFixed(1)}x
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className={`text-xs px-2 py-0.5 rounded font-semibold ${badge.classes}`}>
-                        {badge.label}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmtPrice(r.currentPrice)}</td>
-                    <td className={`px-3 py-2 text-right tabular-nums ${pctColor(r.changePercent)}`}>
-                      {fmtPct(r.changePercent)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <ZoneBar
-                        stop={r.stopPrice}
-                        buy={r.buyZonePrice}
-                        sell={r.sellZonePrice}
-                        current={r.currentPrice}
-                        entry={r.activeTrade?.entryPrice ?? null}
-                      />
-                    </td>
-                    <td className={`px-3 py-2 text-right tabular-nums ${pctColor(r.pctToBuyZone)}`}>
-                      {fmtPct(r.pctToBuyZone)}
-                    </td>
-                    <td className={`px-3 py-2 text-right tabular-nums ${pctColor(r.pctToSellZone)}`}>
-                      {fmtPct(r.pctToSellZone)}
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      {r.signal ? (
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-semibold">
-                          {r.signal}
-                        </span>
-                      ) : (
-                        <span className="text-gray-300 text-xs">·</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-gray-600 text-xs max-w-md">{rowWhy(r)}</td>
-                  </tr>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {score !== null ? (
+                          <button
+                            type="button"
+                            onClick={() => canExpand && toggleExpanded(r.symbol)}
+                            className={`inline-flex items-center gap-1 ${
+                              canExpand ? 'text-blue-700 hover:underline cursor-pointer' : 'text-gray-700 cursor-default'
+                            }`}
+                            title={canExpand ? 'Click to see how the score is built' : 'No breakdown available'}
+                            disabled={!canExpand}
+                          >
+                            <span>{score.toFixed(0)}</span>
+                            {canExpand && (
+                              <span className="text-[10px] text-gray-400">{expanded ? '▾' : '▸'}</span>
+                            )}
+                          </button>
+                        ) : (
+                          <span className="text-gray-300">·</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtPrice(r.currentPrice)}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${pctColor(r.changePercent)}`}>
+                        {fmtPct(r.changePercent)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <ZoneBar
+                          stop={r.stopPrice}
+                          buy={r.buyZonePrice}
+                          sell={r.sellZonePrice}
+                          current={r.currentPrice}
+                          entry={r.activeTrade?.entryPrice ?? null}
+                        />
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${pctColor(r.pctToBuyZone)}`}>
+                        {fmtPct(r.pctToBuyZone)}
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${pctColor(r.pctToSellZone)}`}>
+                        {fmtPct(r.pctToSellZone)}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        {r.signal ? (
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-semibold">
+                            {r.signal}
+                          </span>
+                        ) : (
+                          <span className="text-gray-300 text-xs">·</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600 text-xs max-w-md">{rowWhy(r)}</td>
+                    </tr>
+                    {expanded && canExpand && (
+                      <tr className="bg-blue-50/40 border-t border-blue-100">
+                        <td colSpan={10} className="px-3 py-3">
+                          <div className="text-xs text-gray-700">
+                            <div className="font-semibold mb-1">
+                              Score breakdown
+                              {setup && (
+                                <span className="ml-2 font-normal text-gray-500">
+                                  ({strategyLabel(setup)})
+                                </span>
+                              )}
+                            </div>
+                            {r.rejection && (
+                              <div className="mb-2 text-yellow-800">
+                                Rejected by trade filter: {r.rejection.reason}
+                              </div>
+                            )}
+                            {rationale && rationale.length > 0 && (
+                              <ul className="list-disc pl-5 space-y-0.5">
+                                {rationale.map((line, i) => (
+                                  <li key={i}>{line}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
                     No rows match current filters
                   </td>
                 </tr>
