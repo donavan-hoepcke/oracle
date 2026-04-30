@@ -248,6 +248,12 @@ app.get('/api/scanner', async (_req, res) => {
     const candidateMap = new Map(candidates.map((c) => [c.symbol, c]));
     const activeMap = new Map(activeTrades.map((t) => [t.symbol, t]));
     const positionMap = new Map(positions.map((p) => [p.symbol, p]));
+    const floatCfg = config.execution.float_rotation;
+    const floatMap = new Map(
+      floatCfg && !floatMapService.isStale(floatCfg.max_age_seconds)
+        ? floatMapService.getSnapshot().entries.map((e) => [e.symbol, e])
+        : [],
+    );
 
     const rows = stocks.map((stock) => {
       const active = activeMap.get(stock.symbol);
@@ -329,6 +335,7 @@ app.get('/api/scanner', async (_req, res) => {
           : null,
         cooldownExpiresAt: cooldownMap.get(stock.symbol)?.expiresAt ?? null,
         washSaleRisk: washSaleSet.has(stock.symbol),
+        floatRotation: floatMap.get(stock.symbol)?.rotation ?? null,
       };
     });
 

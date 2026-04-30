@@ -15,7 +15,7 @@ vi.mock('../config.js', () => ({
   },
 }));
 
-import { parseFloatMapText } from '../services/floatMapService.js';
+import { FloatMapService, parseFloatMapText } from '../services/floatMapService.js';
 
 const SAMPLE = `Oracle FloatMAP
 SYMBOL
@@ -118,6 +118,34 @@ describe('parseFloatMapText', () => {
   it('returns empty array when the header is missing', () => {
     expect(parseFloatMapText('')).toEqual([]);
     expect(parseFloatMapText('not a floatmap table')).toEqual([]);
+  });
+
+  it('isStale returns true when never fetched, false when fresh, true when over max age', () => {
+    const svc = new FloatMapService();
+    // Never fetched.
+    expect(svc.isStale(600)).toBe(true);
+
+    // Manually seed a fresh snapshot.
+    (svc as unknown as { snapshot: { fetchedAt: string; entries: unknown[]; error: null } }).snapshot = {
+      fetchedAt: new Date(Date.now() - 60_000).toISOString(),
+      entries: [],
+      error: null,
+    };
+    expect(svc.isStale(600)).toBe(false);
+    expect(svc.isStale(30)).toBe(true); // 60s old, max 30s → stale
+  });
+
+  it('getEntryForSymbol returns null when stale even if symbol is present', () => {
+    const svc = new FloatMapService();
+    (svc as unknown as { snapshot: { fetchedAt: string; entries: unknown[]; error: null } }).snapshot = {
+      fetchedAt: new Date(Date.now() - 3_600_000).toISOString(), // 1 hour old
+      entries: [
+        { symbol: 'AGAE', rotation: 2.0, last: 1, floatMillions: 5, nextOracleSupport: null, nextOracleResistance: null },
+      ],
+      error: null,
+    };
+    expect(svc.getEntryForSymbol('AGAE', 600)).toBeNull(); // stale → null
+    expect(svc.getEntryForSymbol('AGAE', 7200)).not.toBeNull(); // bigger window → fresh
   });
 
   it('parses k / M / B float suffixes into millions', () => {

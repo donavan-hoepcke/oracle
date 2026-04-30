@@ -207,6 +207,7 @@ export interface ScannerRow {
   } | null;
   cooldownExpiresAt: string | null;
   washSaleRisk: boolean;
+  floatRotation: number | null;
 }
 
 export interface ScannerSnapshot {

@@ -4,6 +4,7 @@ import { fetchAlpaca1MinBars } from './alpacaBarService.js';
 import { Bar } from './indicatorService.js';
 import { SymbolMessageContext, messageService, SetupTag } from './messageService.js';
 import { config } from '../config.js';
+import { floatMapService, type FloatMapEntry } from './floatMapService.js';
 import type { RegimeSnapshot } from './regimeService.js';
 
 export type CandidateSetup =
@@ -253,6 +254,23 @@ class RuleEngineService {
       weighted += composite * cfg.score_weight;
     }
 
+    // Float-rotation theory: any symbol on the FloatMAP list gets a base bump
+    // (StocksToTrade has already curated for "interesting rotation"). Add a
+    // second bump when rotation sits in the prime band — high enough to fuel
+    // continuation, not so high that it's blowing off.
+    const floatEntry = this.getFreshFloatEntry(stock.symbol);
+    const floatCfg = config.execution.float_rotation;
+    if (floatEntry && floatCfg) {
+      weighted += floatCfg.score_bump_base;
+      if (
+        floatEntry.rotation !== null &&
+        floatEntry.rotation >= floatCfg.prime_band_min &&
+        floatEntry.rotation <= floatCfg.prime_band_max
+      ) {
+        weighted += floatCfg.score_bump_prime;
+      }
+    }
+
     const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal, orbSignal);
     if (!setup) {
       return null;
@@ -270,6 +288,19 @@ class RuleEngineService {
     }
     if (setup === 'orb_breakout' && orbSignal.matched) {
       rationale.push(...orbSignal.details);
+    }
+    if (floatEntry && floatCfg) {
+      const rotStr = floatEntry.rotation !== null ? `${floatEntry.rotation.toFixed(1)}x` : 'n/a';
+      rationale.push(`FloatMAP listed (rotation ${rotStr}) +${floatCfg.score_bump_base}`);
+      if (
+        floatEntry.rotation !== null &&
+        floatEntry.rotation >= floatCfg.prime_band_min &&
+        floatEntry.rotation <= floatCfg.prime_band_max
+      ) {
+        rationale.push(
+          `Prime rotation band [${floatCfg.prime_band_min}x, ${floatCfg.prime_band_max}x] +${floatCfg.score_bump_prime}`,
+        );
+      }
     }
 
     let suggestedEntry = stock.currentPrice ?? stock.buyZonePrice ?? 0;
@@ -462,6 +493,12 @@ class RuleEngineService {
     // momentum_max_chase_pct above. Reject if we're chasing too hard.
     const pctAbove = (current - buy) / buy;
     return pctAbove <= config.execution.momentum_max_chase_pct;
+  }
+
+  private getFreshFloatEntry(symbol: string): FloatMapEntry | null {
+    const cfg = config.execution.float_rotation;
+    if (!cfg?.enabled) return null;
+    return floatMapService.getEntryForSymbol(symbol, cfg.max_age_seconds);
   }
 
   private findSectorRegimeForTicker(regime: RegimeSnapshot, sector: string) {

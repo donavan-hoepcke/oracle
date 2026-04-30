@@ -66,6 +66,7 @@ const configSchema = z.object({
           poll_interval_sec: z.number().positive().default(120),
           frame_url_contains: z.string().default('amplifyapp.com'),
           hydration_wait_ms: z.number().int().nonnegative().default(8_000),
+          frame_max_wait_ms: z.number().int().nonnegative().default(30_000),
         })
         .default({}),
       moderatorAlerts: z
@@ -111,6 +112,23 @@ const configSchema = z.object({
       trailing_mfe_activate_r: z.number().positive().default(0.5),
       trailing_mfe_giveback_pct: z.number().min(0).max(1).default(0.5),
       eod_flatten_time: z.string().regex(/^\d{2}:\d{2}$/).default('15:50'),
+      float_rotation: z
+        .object({
+          enabled: z.boolean().default(true),
+          // Flat bonus for any symbol on the FloatMAP list — "worth a look".
+          score_bump_base: z.number().default(10),
+          // Extra bonus when rotation lands in the prime band (active enough
+          // to fuel continuation, not so hot it's blowing off).
+          score_bump_prime: z.number().default(5),
+          prime_band_min: z.number().nonnegative().default(1.0),
+          prime_band_max: z.number().positive().default(3.0),
+          // Hard veto when rotation exceeds blow-off threshold.
+          veto_rotation_max: z.number().positive().default(7.0),
+          // Stale-data guard — silent scraper outages should not leak old
+          // rotation values into today's decisions.
+          max_age_seconds: z.number().int().positive().default(600),
+        })
+        .default({}),
       regime: z
         .object({
           enabled: z.boolean().default(false),

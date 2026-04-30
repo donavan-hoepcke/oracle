@@ -90,6 +90,23 @@ export class FloatMapService {
     return this.snapshot;
   }
 
+  /**
+   * Lookup a single ticker. Returns null when the symbol is absent OR the
+   * snapshot is older than max_age_seconds — callers must treat absent and
+   * stale identically so a silent scraper outage doesn't leak yesterday's
+   * rotation into today's decisions.
+   */
+  getEntryForSymbol(symbol: string, maxAgeSeconds: number): FloatMapEntry | null {
+    if (this.isStale(maxAgeSeconds)) return null;
+    return this.snapshot.entries.find((e) => e.symbol === symbol) ?? null;
+  }
+
+  isStale(maxAgeSeconds: number): boolean {
+    if (!this.snapshot.fetchedAt) return true;
+    const ageMs = Date.now() - new Date(this.snapshot.fetchedAt).getTime();
+    return ageMs > maxAgeSeconds * 1000;
+  }
+
   async start(): Promise<void> {
     if (!config.bot.floatmap.enabled) return;
     if (this.pollTimer) return;
@@ -132,6 +149,12 @@ export class FloatMapService {
    * Attach to the debug Chrome and grab the FloatMAP iframe's rendered text.
    * Reuses an existing tab at the FloatMAP URL when present so repeated polls
    * don't flash a new tab open-and-closed in the user's Chrome window.
+   *
+   * If the existing tab's iframe has already detached (Chrome throttles
+   * inactive tabs and unloads cross-origin iframes after a while), we fall
+   * back to a full re-navigation. Without this, a long-idle tab silently
+   * starves every subsequent poll with "no frame matching ..." until the
+   * user manually refreshes.
    */
   private async fetchFrameText(): Promise<string> {
     const { chromium } = await import('playwright');
@@ -143,12 +166,33 @@ export class FloatMapService {
       const context = contexts[0];
       const existing = context.pages().find((p) => p.url().includes(fm.url));
       const page = existing ?? (await context.newPage());
+
+      const findFrame = () => page.frames().find((f) => f.url().includes(fm.frame_url_contains));
+      const pollForFrame = async (deadline: number) => {
+        let f = findFrame();
+        while (!f && Date.now() < deadline) {
+          await page.waitForTimeout(500);
+          f = findFrame();
+        }
+        return f;
+      };
+
+      // For new tabs we always have to navigate. For reused tabs, give the
+      // iframe one short window to be present (fast path: tab is alive and
+      // fresh). If it isn't, force a re-navigation to wake the iframe.
       if (!existing) {
         await page.goto(fm.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-        await page.waitForTimeout(fm.hydration_wait_ms);
       }
-      const frame = page.frames().find((f) => f.url().includes(fm.frame_url_contains));
-      if (!frame) throw new Error(`no frame matching "${fm.frame_url_contains}"`);
+      let frame = existing ? await pollForFrame(Date.now() + 2_000) : undefined;
+      if (!frame) {
+        await page.goto(fm.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        frame = await pollForFrame(Date.now() + fm.frame_max_wait_ms);
+      }
+      if (!frame) {
+        throw new Error(`no frame matching "${fm.frame_url_contains}" within ${fm.frame_max_wait_ms} ms`);
+      }
+      // Frame is attached; let the table body render before we read.
+      await page.waitForTimeout(fm.hydration_wait_ms);
       return (await frame.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
     } finally {
       await browser.close();

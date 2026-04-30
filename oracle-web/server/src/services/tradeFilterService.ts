@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { TradeCandidate as BaseTradeCandidate } from './ruleEngineService.js';
+import { floatMapService } from './floatMapService.js';
 import type { RegimeSnapshot } from './regimeService.js';
 
 type TradeCandidate = BaseTradeCandidate & {
@@ -65,6 +66,17 @@ class TradeFilterService {
     if (regime && exec.regime?.enabled) {
       const vetoResult = this.runRegimeVetos(candidate, regime);
       if (!vetoResult.passed) return vetoResult;
+    }
+
+    if (exec.float_rotation?.enabled) {
+      const cfg = exec.float_rotation;
+      const entry = floatMapService.getEntryForSymbol(candidate.symbol, cfg.max_age_seconds);
+      if (entry && entry.rotation !== null && entry.rotation > cfg.veto_rotation_max) {
+        return {
+          passed: false,
+          reason: `float blow-off (rotation ${entry.rotation.toFixed(1)}x exceeds cap ${cfg.veto_rotation_max}x)`,
+        };
+      }
     }
 
     return { passed: true, reason: null };
