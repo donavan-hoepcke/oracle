@@ -57,6 +57,10 @@ const configSchema = z.object({
               'last',
             ]),
           oracle_schema_strict: z.boolean().default(false),
+          // Periodically force-reload the Oracle tab so we don't accumulate
+          // stale data from cached HTML, drifted JS state, or a tab the
+          // browser de-prioritized while idle. 0 disables.
+          reload_interval_minutes: z.number().int().nonnegative().default(60),
         })
         .default({}),
       floatmap: z

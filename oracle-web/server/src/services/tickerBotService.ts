@@ -61,6 +61,7 @@ interface BrowserContextLike {
 
 interface PageLike {
   goto: (url: string, options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' }) => Promise<unknown>;
+  reload: (options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' }) => Promise<unknown>;
   waitForSelector: (selector: string, options?: { timeout?: number }) => Promise<unknown>;
   fill: (selector: string, value: string) => Promise<void>;
   click: (selector: string) => Promise<void>;
@@ -154,12 +155,30 @@ export function sanitizeWatchlistItems(items: WatchlistItem[]): WatchlistItem[] 
   });
 }
 
+/**
+ * Pure decision: should the Oracle tab be reloaded right now? Exposed so
+ * the trigger logic can be unit-tested without mocking Playwright.
+ *
+ * Returns false when the feature is disabled (intervalMinutes <= 0), or
+ * when fewer than `intervalMinutes` have elapsed since `lastReloadAt`.
+ * lastReloadAt === 0 is a sentinel meaning "never loaded yet" and also
+ * returns false — caller is responsible for stamping it on bootstrap.
+ */
+export function shouldReload(lastReloadAt: number, intervalMinutes: number, now: number): boolean {
+  if (intervalMinutes <= 0) return false;
+  if (lastReloadAt <= 0) return false;
+  return now - lastReloadAt >= intervalMinutes * 60 * 1000;
+}
+
 class PlaywrightTickerSource {
   private browser: BrowserLike | null = null;
   private context: BrowserContextLike | null = null;
   private page: PageLike | null = null;
   private attachedToExistingChrome = false;
   private lastSchemaSignature: string | null = null;
+  // Unix ms of the last full page load (initial bootstrap counts). Drives
+  // the periodic reload so a long-idle tab doesn't keep serving stale DOM.
+  private lastReloadAt = 0;
 
   async start(): Promise<void> {
     if (this.page) return;
@@ -188,6 +207,7 @@ class PlaywrightTickerSource {
       this.page = this.findExistingOraclePage(this.context) ?? (await this.context.newPage());
 
       await this.bootstrapPage(this.page);
+      this.lastReloadAt = Date.now();
 
       if (config.bot.playwright.persist_session) {
         await this.saveStorageState();
@@ -208,6 +228,7 @@ class PlaywrightTickerSource {
     this.context = await browser.newContext(usePersistedState ? { storageState: sessionStatePath } : undefined);
     this.page = await this.context.newPage();
     await this.bootstrapPage(this.page);
+    this.lastReloadAt = Date.now();
 
     if (config.bot.playwright.persist_session) {
       await this.saveStorageState();
@@ -237,6 +258,8 @@ class PlaywrightTickerSource {
     if (!this.page) {
       throw new Error('Playwright source not initialized');
     }
+
+    await this.maybeReload();
 
     const playwrightConfig = config.bot.playwright;
 
@@ -537,6 +560,53 @@ class PlaywrightTickerSource {
         counts,
       };
     });
+  }
+
+  /**
+   * If `reload_interval_minutes` has elapsed since the page last fully
+   * loaded, reload it before the next extraction. Keeps long-running
+   * sessions from drifting on cached DOM or de-prioritized JS state.
+   * Reload failures are logged and swallowed so one bad cycle doesn't
+   * sink the whole bot — the next cycle just retries with the existing
+   * (possibly stale) tab.
+   */
+  private async maybeReload(): Promise<void> {
+    if (!this.page) return;
+    const intervalMin = config.bot.playwright.reload_interval_minutes;
+    if (this.lastReloadAt === 0) {
+      // start() didn't initialize — defensive fallback so we don't
+      // immediately reload on the first fetch and tear down the just-
+      // bootstrapped page.
+      this.lastReloadAt = Date.now();
+      return;
+    }
+    if (!shouldReload(this.lastReloadAt, intervalMin, Date.now())) return;
+
+    try {
+      console.log(`Reloading Oracle tab (interval ${intervalMin} min reached)`);
+      await this.page.reload({ waitUntil: 'domcontentloaded' });
+      const readySelector =
+        config.bot.playwright.wait_for_selector ||
+        config.bot.playwright.row_selector ||
+        config.bot.playwright.symbols_selector;
+      if (readySelector) {
+        try {
+          await this.page.waitForSelector(readySelector, { timeout: 30000 });
+        } catch {
+          // Some Oracle layouts render rows in iframes — selector won't
+          // appear top-level. fetchTickers handles iframe scopes already,
+          // so don't fail the reload just because the top-level selector
+          // didn't match.
+        }
+      }
+      this.lastReloadAt = Date.now();
+    } catch (err) {
+      console.warn(
+        'Oracle tab reload failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+      // Don't update lastReloadAt — we'll try again next cycle.
+    }
   }
 
   private async bootstrapPage(page: PageLike): Promise<void> {

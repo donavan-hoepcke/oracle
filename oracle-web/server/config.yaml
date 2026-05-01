@@ -39,6 +39,7 @@ bot:
       - "float"
       - "mk_cap"
     oracle_schema_strict: false
+    reload_interval_minutes: 60
   floatmap:
     enabled: true
     url: "https://university.stockstotrade.com/page/Oracle-FloatMAP"
