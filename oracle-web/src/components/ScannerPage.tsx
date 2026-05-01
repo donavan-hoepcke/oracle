@@ -294,6 +294,18 @@ export function ScannerPage({
                             {r.floatRotation.toFixed(1)}x
                           </span>
                         )}
+                        {r.sectorHotness?.isHot && (
+                          <span
+                            className="ml-1 text-[10px] px-1 rounded bg-orange-100 text-orange-800"
+                            title={`Hot sector: ${r.sectorHotness.sector} (${r.sectorHotness.etf}) — rank #${r.sectorHotness.rank} by today's % change${
+                              r.sectorHotness.pctChange !== null
+                                ? `, ${(r.sectorHotness.pctChange * 100).toFixed(2)}%`
+                                : ''
+                            }`}
+                          >
+                            🔥#{r.sectorHotness.rank}
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <span className={`text-xs px-2 py-0.5 rounded font-semibold ${badge.classes}`}>

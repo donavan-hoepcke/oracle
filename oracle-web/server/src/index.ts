@@ -13,6 +13,8 @@ import { executionService } from './services/executionService.js';
 import { backtestRunner } from './services/backtestRunner.js';
 import { synthesizeDay } from './services/recordingSynthService.js';
 import { floatMapService } from './services/floatMapService.js';
+import { sectorHotnessService } from './services/sectorHotnessService.js';
+import { sectorMapService } from './services/sectorMapService.js';
 import { moderatorAlertService } from './services/moderatorAlertService.js';
 import { buildSymbolDetail } from './services/symbolDetailService.js';
 import { buildSignalsInbox } from './services/signalsService.js';
@@ -173,6 +175,10 @@ app.get('/api/floatmap', (_req, res) => {
   res.json(floatMapService.getSnapshot());
 });
 
+app.get('/api/sector-hotness', (_req, res) => {
+  res.json(sectorHotnessService.getSnapshot());
+});
+
 app.get('/api/moderator-alerts', (_req, res) => {
   res.json(moderatorAlertService.getSnapshot());
 });
@@ -255,6 +261,18 @@ app.get('/api/scanner', async (_req, res) => {
         : [],
     );
 
+    // Per-symbol sector hotness — resolve once per row so the scanner shows
+    // the same rank/score the rule engine just used to pick candidates.
+    const hotnessCfg = config.execution.sector_hotness;
+    const hotnessFresh = hotnessCfg?.enabled && !sectorHotnessService.isStale(hotnessCfg.max_age_seconds);
+    const hotnessSnapshot = hotnessFresh ? sectorHotnessService.getSnapshot() : null;
+    const sectorBySymbol = hotnessFresh
+      ? await Promise.all(
+          stocks.map(async (s) => [s.symbol, await sectorMapService.getSectorFor(s.symbol)] as const),
+        )
+      : [];
+    const symbolToSector = new Map(sectorBySymbol);
+
     const rows = stocks.map((stock) => {
       const active = activeMap.get(stock.symbol);
       const rejection = rejectionMap.get(stock.symbol);
@@ -336,6 +354,23 @@ app.get('/api/scanner', async (_req, res) => {
         cooldownExpiresAt: cooldownMap.get(stock.symbol)?.expiresAt ?? null,
         washSaleRisk: washSaleSet.has(stock.symbol),
         floatRotation: floatMap.get(stock.symbol)?.rotation ?? null,
+        sectorHotness: (() => {
+          if (!hotnessSnapshot) return null;
+          const sector = symbolToSector.get(stock.symbol);
+          if (!sector || sector === 'unknown') return null;
+          const h = hotnessSnapshot.bySector[sector];
+          if (!h || h.rank === null) return null;
+          return {
+            sector: h.sector,
+            etf: h.etf,
+            rank: h.rank,
+            pctChange: h.pctChange,
+            isHot:
+              hotnessCfg !== undefined &&
+              hotnessCfg.enabled &&
+              h.rank <= hotnessCfg.top_k_sectors,
+          };
+        })(),
       };
     });
 
@@ -613,6 +648,11 @@ floatMapService.start().catch((err) => {
   console.warn('floatMap start failed:', err instanceof Error ? err.message : err);
 });
 
+// Start sector-hotness polling (Alpaca ETF bars; no-op when disabled).
+sectorHotnessService.start().catch((err) => {
+  console.warn('sectorHotness start failed:', err instanceof Error ? err.message : err);
+});
+
 // Start Daily Market Profits moderator-alert polling (no-op when disabled).
 moderatorAlertService.start().catch((err) => {
   console.warn('moderatorAlerts start failed:', err instanceof Error ? err.message : err);
@@ -629,6 +669,7 @@ process.on('SIGINT', () => {
   console.log('\nShutting down...');
   priceSocketServer.shutdown();
   floatMapService.stop().catch(() => {});
+  sectorHotnessService.stop().catch(() => {});
   moderatorAlertService.stop().catch(() => {});
   server.close(() => {
     process.exit(0);

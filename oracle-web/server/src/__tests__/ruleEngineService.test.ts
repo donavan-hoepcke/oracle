@@ -26,6 +26,14 @@ vi.mock('../config.js', () => ({
         veto_rotation_max: 7.0,
         max_age_seconds: 600,
       },
+      sector_hotness: {
+        enabled: true,
+        top_k_sectors: 3,
+        score_bump: 8,
+        refresh_interval_seconds: 300,
+        max_age_seconds: 900,
+        lookback_minutes: 60,
+      },
     },
   },
 }));
@@ -34,8 +42,12 @@ vi.mock('../services/floatMapService.js', () => ({
   floatMapService: {
     getEntryForSymbol: vi.fn().mockReturnValue(null),
   },
-  // Re-export the type as a value so `import type` keeps working at runtime.
-  // (Vitest doesn't need this typically — left here as a clarifying no-op.)
+}));
+
+vi.mock('../services/sectorHotnessService.js', () => ({
+  sectorHotnessService: {
+    getHotnessForSymbol: vi.fn().mockResolvedValue(null),
+  },
 }));
 
 import {
@@ -344,5 +356,50 @@ describe('RuleEngineService suggestedStop clamp', () => {
 
     expect(candidate!.setup).toBe('red_candle_theory');
     expect(candidate!.suggestedStop).toBe(1.85);
+  });
+
+  it('applies sector hotness bump when the symbol is in a top-K hot sector', () => {
+    const stock = makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6 });
+    const baseline = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+    );
+    const withHotness = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+      undefined,
+      undefined,
+      { sector: 'technology', etf: 'XLK', rank: 1, pctChange: 0.024 },
+    );
+    expect(withHotness!.score - baseline!.score).toBeCloseTo(8, 1);
+    expect(withHotness!.rationale.some((r) => r.includes('Hot sector: technology') && r.includes('#1'))).toBe(true);
+  });
+
+  it('does not apply hotness bump when sector ranks outside top-K', () => {
+    const stock = makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6 });
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+      undefined,
+      undefined,
+      { sector: 'utilities', etf: 'XLU', rank: 10, pctChange: -0.005 },
+    );
+    expect(candidate!.rationale.some((r) => r.includes('Hot sector'))).toBe(false);
+  });
+
+  it('does not apply hotness bump when sector hotness is null (stale snapshot)', () => {
+    const stock = makeStock({ currentPrice: 2.0, buyZonePrice: 1.95, stopPrice: 1.9, sellZonePrice: 2.6 });
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      emptyRedCandleSignal(),
+      undefined,
+      undefined,
+      null,
+    );
+    expect(candidate!.rationale.some((r) => r.includes('Hot sector'))).toBe(false);
   });
 });

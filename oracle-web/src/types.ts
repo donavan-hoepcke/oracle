@@ -208,6 +208,13 @@ export interface ScannerRow {
   cooldownExpiresAt: string | null;
   washSaleRisk: boolean;
   floatRotation: number | null;
+  sectorHotness: {
+    sector: string;
+    etf: string;
+    rank: number;
+    pctChange: number | null;
+    isHot: boolean;
+  } | null;
 }
 
 export interface ScannerSnapshot {
