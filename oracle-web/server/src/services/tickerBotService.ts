@@ -63,6 +63,7 @@ interface PageLike {
   goto: (url: string, options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' }) => Promise<unknown>;
   reload: (options?: { waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' }) => Promise<unknown>;
   waitForSelector: (selector: string, options?: { timeout?: number }) => Promise<unknown>;
+  waitForTimeout: (timeout: number) => Promise<void>;
   fill: (selector: string, value: string) => Promise<void>;
   click: (selector: string) => Promise<void>;
   url: () => string;
@@ -96,6 +97,7 @@ interface FrameLike {
     ) => T,
     arg?: A
   ) => Promise<T>;
+  evaluate: <T = unknown>(pageFunction: string) => Promise<T>;
 }
 
 interface EvalScopeLike {
@@ -207,6 +209,7 @@ class PlaywrightTickerSource {
       this.page = this.findExistingOraclePage(this.context) ?? (await this.context.newPage());
 
       await this.bootstrapPage(this.page);
+      await this.ensureTop10ToggleOff();
       this.lastReloadAt = Date.now();
 
       if (config.bot.playwright.persist_session) {
@@ -228,6 +231,7 @@ class PlaywrightTickerSource {
     this.context = await browser.newContext(usePersistedState ? { storageState: sessionStatePath } : undefined);
     this.page = await this.context.newPage();
     await this.bootstrapPage(this.page);
+    await this.ensureTop10ToggleOff();
     this.lastReloadAt = Date.now();
 
     if (config.bot.playwright.persist_session) {
@@ -563,6 +567,53 @@ class PlaywrightTickerSource {
   }
 
   /**
+   * The Oracle tool has a "Top 10 only" toggle button in its iframe that
+   * caps the visible watchlist when active. State persists in the user's
+   * Chrome profile across reloads, so once turned on it silently halves
+   * our coverage forever. After every load/reload, scan the iframes for
+   * the button: if there are <= 10 rows visible, the toggle is most
+   * likely on — click it off and let the table re-render.
+   *
+   * The toggle exposes no aria-pressed / data-state, so the row-count
+   * heuristic is the most reliable signal we have. The Oracle watchlist
+   * normally has 15-20+ rows; on the rare day with fewer than 11
+   * candidates, this might toggle the filter on inadvertently — but the
+   * next reload self-corrects (still <= 10 rows → click again to off).
+   */
+  private async ensureTop10ToggleOff(): Promise<void> {
+    if (!this.page) return;
+    const ROW_THRESHOLD = 10;
+    for (const frame of this.page.frames()) {
+      try {
+        const result = await frame.evaluate<{
+          found: boolean;
+          rows?: number;
+          clicked?: boolean;
+        }>(`(function(){
+          var btns = Array.from(document.querySelectorAll('button'));
+          var top10 = btns.find(function(b){
+            return b.textContent && b.textContent.trim().toLowerCase().includes('top 10 only');
+          });
+          if (!top10) return { found: false };
+          var rows = document.querySelectorAll('tbody tr, [role="row"]').length;
+          if (rows > ${ROW_THRESHOLD}) return { found: true, rows: rows, clicked: false };
+          top10.click();
+          return { found: true, rows: rows, clicked: true };
+        })()`);
+        if (result.found && result.clicked) {
+          console.log(
+            `Top 10 toggle was on (${result.rows} rows visible) — clicked to disable. Waiting for table re-render.`,
+          );
+          await this.page.waitForTimeout(2000);
+        }
+        if (result.found) return; // No need to scan remaining frames once we found it.
+      } catch {
+        // Cross-origin frames or evaluation errors — try the next one.
+      }
+    }
+  }
+
+  /**
    * If `reload_interval_minutes` has elapsed since the page last fully
    * loaded, reload it before the next extraction. Keeps long-running
    * sessions from drifting on cached DOM or de-prioritized JS state.
@@ -599,6 +650,7 @@ class PlaywrightTickerSource {
           // didn't match.
         }
       }
+      await this.ensureTop10ToggleOff();
       this.lastReloadAt = Date.now();
     } catch (err) {
       console.warn(
