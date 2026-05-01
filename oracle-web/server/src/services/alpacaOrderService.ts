@@ -132,7 +132,20 @@ class AlpacaOrderService {
 
   async closePosition(symbol: string): Promise<void> {
     const res = await fetch(`${baseUrl()}/positions/${symbol}`, { method: 'DELETE', headers: headers() });
-    if (!res.ok) throw new Error(`Alpaca closePosition error: ${res.status}`);
+    if (!res.ok) {
+      // Alpaca's body usually contains the actionable reason (e.g. "trade
+      // denied due to pattern day trading protection") — surface it so the UI
+      // shows something meaningful instead of just "403".
+      const body = await res.text().catch(() => '');
+      let detail = body;
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed.message === 'string') detail = parsed.message;
+      } catch {
+        // body wasn't JSON — keep raw text
+      }
+      throw new Error(`Alpaca closePosition ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
   }
 
   async closeAllPositions(): Promise<void> {

@@ -74,10 +74,24 @@ function App() {
     if (!confirm('Close ALL open positions immediately at market? This cannot be undone.')) return;
     try {
       const res = await fetch('/api/execution/flatten', { method: 'POST' });
-      if (!res.ok) console.error('Failed to flatten:', res.status);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(`Flatten failed: ${body.error ?? res.status}`);
+        return;
+      }
+      // Surface the broker's actual outcome — Alpaca can reject closes (e.g. PDT
+      // on a paper account under $25k) and the engine keeps those trades open.
+      const failed: Array<{ symbol: string; error: string }> = body.failed ?? [];
+      if (failed.length > 0) {
+        const detail = failed.map((f) => `${f.symbol}: ${f.error}`).join('\n');
+        alert(`${body.message}\n\nStill open at broker:\n${detail}`);
+      } else if (body.requested > 0) {
+        alert(body.message);
+      }
       journalRefresh();
     } catch (err) {
       console.error('Failed to flatten:', err);
+      alert(`Flatten request failed: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
   };
 
