@@ -129,6 +129,23 @@ const configSchema = z.object({
           max_age_seconds: z.number().int().positive().default(600),
         })
         .default({}),
+      sector_hotness: z
+        .object({
+          enabled: z.boolean().default(true),
+          // Top K sectors by today's % change get the score bump.
+          top_k_sectors: z.number().int().positive().default(3),
+          score_bump: z.number().default(8),
+          // Polling cadence — sector ETF data doesn't move minute-to-minute.
+          refresh_interval_seconds: z.number().int().positive().default(300),
+          // Stale-data guard. If the last successful poll is older than this,
+          // skip the bump (silent failure shouldn't leak).
+          max_age_seconds: z.number().int().positive().default(900),
+          // 1m bar lookback used to compute today's session move on each ETF.
+          // 480 = 8h, comfortably covers regular hours so post-close polls
+          // still see the session open as the first bar.
+          lookback_minutes: z.number().int().positive().default(480),
+        })
+        .default({}),
       regime: z
         .object({
           enabled: z.boolean().default(false),

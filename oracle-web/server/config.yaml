@@ -88,6 +88,13 @@ execution:
     prime_band_max: 3.0
     veto_rotation_max: 7.0
     max_age_seconds: 600
+  sector_hotness:
+    enabled: true
+    top_k_sectors: 3
+    score_bump: 8
+    refresh_interval_seconds: 300
+    max_age_seconds: 900
+    lookback_minutes: 480
   regime:
     enabled: false
     score_weight: 10

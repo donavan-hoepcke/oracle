@@ -5,6 +5,7 @@ import { Bar } from './indicatorService.js';
 import { SymbolMessageContext, messageService, SetupTag } from './messageService.js';
 import { config } from '../config.js';
 import { floatMapService, type FloatMapEntry } from './floatMapService.js';
+import { sectorHotnessService, type SectorHotness } from './sectorHotnessService.js';
 import type { RegimeSnapshot } from './regimeService.js';
 
 export type CandidateSetup =
@@ -209,11 +210,15 @@ class RuleEngineService {
   }
 
   private async evaluateStock(stock: StockState, messageContext: SymbolMessageContext, regime?: RegimeSnapshot): Promise<TradeCandidate | null> {
-    const [redCandleSignal, orbSignal] = await Promise.all([
+    const hotnessCfg = config.execution.sector_hotness;
+    const [redCandleSignal, orbSignal, sectorHotness] = await Promise.all([
       this.detectRedCandleTheory(stock),
       this.detectOrbBreakout(stock),
+      hotnessCfg?.enabled
+        ? sectorHotnessService.getHotnessForSymbol(stock.symbol, hotnessCfg.max_age_seconds)
+        : Promise.resolve(null),
     ]);
-    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal, regime);
+    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal, regime, sectorHotness);
   }
 
   /**
@@ -228,6 +233,7 @@ class RuleEngineService {
     redCandleSignal: RedCandleSignal,
     orbSignal: OrbSignal = emptyOrbSignal(),
     regime?: RegimeSnapshot,
+    sectorHotness?: SectorHotness | null,
   ): TradeCandidate | null {
     const oracleScore = this.scoreOracle(stock);
     const messageScore = Math.min(100, messageContext.convictionScore);
@@ -271,6 +277,18 @@ class RuleEngineService {
       }
     }
 
+    // Sector hotness: a flat bump when the symbol's sector ranks in the top K
+    // by today's % change. Captures news-driven sector rotations.
+    const hotnessCfg = config.execution.sector_hotness;
+    if (
+      hotnessCfg?.enabled &&
+      sectorHotness &&
+      sectorHotness.rank !== null &&
+      sectorHotness.rank <= hotnessCfg.top_k_sectors
+    ) {
+      weighted += hotnessCfg.score_bump;
+    }
+
     const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal, orbSignal);
     if (!setup) {
       return null;
@@ -301,6 +319,18 @@ class RuleEngineService {
           `Prime rotation band [${floatCfg.prime_band_min}x, ${floatCfg.prime_band_max}x] +${floatCfg.score_bump_prime}`,
         );
       }
+    }
+    if (
+      hotnessCfg?.enabled &&
+      sectorHotness &&
+      sectorHotness.rank !== null &&
+      sectorHotness.rank <= hotnessCfg.top_k_sectors
+    ) {
+      const pctStr =
+        sectorHotness.pctChange !== null ? `${(sectorHotness.pctChange * 100).toFixed(2)}%` : 'n/a';
+      rationale.push(
+        `Hot sector: ${sectorHotness.sector} (#${sectorHotness.rank}, ${sectorHotness.etf} ${pctStr}) +${hotnessCfg.score_bump}`,
+      );
     }
 
     let suggestedEntry = stock.currentPrice ?? stock.buyZonePrice ?? 0;
