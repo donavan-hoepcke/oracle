@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { RawStreamService } from '../services/rawStreamService.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { RawStreamService, rawStreamService } from '../services/rawStreamService.js';
+import { messageService } from '../services/messageService.js';
+import { moderatorAlertService, type ModeratorPost } from '../services/moderatorAlertService.js';
+import { RegimeService, type RegimeSnapshot } from '../services/regimeService.js';
 
 describe('RawStreamService', () => {
   let svc: RawStreamService;
@@ -57,5 +60,79 @@ describe('RawStreamService', () => {
     unsubscribe();
     svc.publish({ type: 'message', payload: {} });
     expect(events).toEqual([1]);
+  });
+});
+
+describe('RawStreamService.bind() integration', () => {
+  beforeEach(() => {
+    rawStreamService.reset();
+  });
+
+  it('bindMessageService forwards messageService events as message events', () => {
+    const seen: { type: string; payload: unknown }[] = [];
+    const unsub = rawStreamService.subscribe((e) => seen.push({ type: e.type, payload: e.payload }));
+    rawStreamService.bindMessageService(messageService);
+    messageService.ingest({ text: 'AAPL bind test' });
+    unsub();
+    rawStreamService.unbindAll();
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    expect(seen.some((e) => e.type === 'message')).toBe(true);
+  });
+
+  it('bindModeratorAlertService publishes one mod_alert event per post', () => {
+    const types: string[] = [];
+    rawStreamService.subscribe((e) => types.push(e.type));
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const post: ModeratorPost = {
+      title: 'test',
+      kind: 'alert',
+      author: 'mod',
+      postedAt: '2026-05-02T13:00:00.000Z',
+      body: '',
+      signal: null,
+      backups: [],
+    };
+    moderatorAlertService.ingestPosts([post, post]);
+    rawStreamService.unbindAll();
+    moderatorAlertService.ingestPosts([post]);
+    expect(types.filter((t) => t === 'mod_alert')).toHaveLength(2);
+  });
+
+  it('bindRegimeService publishes regime_shift events', () => {
+    const captured: RegimeSnapshot[] = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'regime_shift') captured.push(e.payload as RegimeSnapshot);
+    });
+    const fakeRegime = new RegimeService({
+      fetchBars: vi.fn(async () => []),
+      fetchTodayBars: vi.fn(async () => []),
+      sectorMap: { getSectorFor: vi.fn(async () => 'unknown'), getEtfFor: () => 'SPY' },
+      tradeHistory: { getRecentTrades: vi.fn(async () => []) },
+    });
+    rawStreamService.bindRegimeService(fakeRegime);
+    const snap: RegimeSnapshot = {
+      ts: '2026-05-02T13:00:00.000Z',
+      market: { score: 0, spyTrendPct: null, vxxRocPct: null, status: 'ok' },
+      sectors: {},
+      tickers: {},
+    };
+    fakeRegime.recordSnapshot(snap);
+    rawStreamService.unbindAll();
+    fakeRegime.recordSnapshot(snap);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].ts).toBe('2026-05-02T13:00:00.000Z');
+  });
+
+  it('reset detaches all bindings and clears buffer + listeners', () => {
+    rawStreamService.bindMessageService(messageService);
+    rawStreamService.publish({ type: 'message', payload: { x: 1 } });
+    expect(rawStreamService.replaySince(0).length).toBe(1);
+    rawStreamService.reset();
+    expect(rawStreamService.replaySince(0)).toEqual([]);
+    // After reset, ingesting through messageService must not produce events because reset unbinds.
+    const seen: number[] = [];
+    rawStreamService.subscribe((e) => seen.push(e.id));
+    messageService.ingest({ text: 'AAPL after reset' });
+    expect(seen).toEqual([]);
   });
 });
