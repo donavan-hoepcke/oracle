@@ -204,7 +204,7 @@ describe('computeTickerRegime', () => {
   });
 });
 
-import { RegimeService } from '../services/regimeService.js';
+import { RegimeService, type RegimeSnapshot } from '../services/regimeService.js';
 
 describe('RegimeService.buildRegimeSnapshot', () => {
   function barFromClose(close: number, minute = 0): Bar {
@@ -269,5 +269,53 @@ describe('RegimeService.buildRegimeSnapshot', () => {
     const snapshot = await service.buildRegimeSnapshot(['ABC'], 'orb_breakout', new Date());
     expect(snapshot.market.status).toBe('unavailable');
     expect(snapshot.tickers.ABC.status).toBe('unavailable');
+  });
+
+  describe('onSnapshot subscription', () => {
+    const sample: RegimeSnapshot = {
+      ts: '2026-05-02T13:42:00.000Z',
+      market: { score: 0, spyTrendPct: null, vxxRocPct: null, status: 'ok' },
+      sectors: {},
+      tickers: {},
+    };
+
+    function makeService(): RegimeService {
+      const fetchBars = vi.fn(async () => []);
+      const fetchTodayBars = vi.fn(async () => []);
+      const sectorMap = {
+        getSectorFor: vi.fn(async () => 'unknown'),
+        getEtfFor: (_: string) => 'SPY',
+      };
+      const tradeHistory = { getRecentTrades: vi.fn(async () => []) };
+      return new RegimeService({ fetchBars, fetchTodayBars, sectorMap, tradeHistory });
+    }
+
+    it('fires when recordSnapshot is called and stops after unsubscribe', () => {
+      const svc = makeService();
+      const captured: RegimeSnapshot[] = [];
+      const unsub = svc.onSnapshot((s) => captured.push(s));
+      svc.recordSnapshot(sample);
+      svc.recordSnapshot({ ...sample, ts: '2026-05-02T13:43:00.000Z' });
+      unsub();
+      svc.recordSnapshot(sample);
+      expect(captured).toHaveLength(2);
+      expect(captured[1].ts).toBe('2026-05-02T13:43:00.000Z');
+    });
+
+    it('exposes the most recent snapshot via getLastSnapshot', () => {
+      const svc = makeService();
+      expect(svc.getLastSnapshot()).toBeNull();
+      svc.recordSnapshot(sample);
+      expect(svc.getLastSnapshot()).toEqual(sample);
+    });
+
+    it('emits when buildRegimeSnapshot completes', async () => {
+      const svc = makeService();
+      const captured: RegimeSnapshot[] = [];
+      svc.onSnapshot((s) => captured.push(s));
+      await svc.buildRegimeSnapshot([], 'orb_breakout', new Date(2026, 4, 2, 14, 0));
+      expect(captured).toHaveLength(1);
+      expect(captured[0].market.status).toBe('unavailable'); // empty bars → unavailable
+    });
   });
 });

@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import type { Bar } from './indicatorService.js';
 import type { TradeLedgerEntry } from './executionService.js';
 import type { CandidateSetup } from './ruleEngineService.js';
@@ -234,7 +235,26 @@ export interface RegimeDeps {
 }
 
 export class RegimeService {
-  constructor(private readonly deps: RegimeDeps) {}
+  private emitter = new EventEmitter();
+  private lastSnapshot: RegimeSnapshot | null = null;
+
+  constructor(private readonly deps: RegimeDeps) {
+    this.emitter.setMaxListeners(0);
+  }
+
+  recordSnapshot(snapshot: RegimeSnapshot): void {
+    this.lastSnapshot = snapshot;
+    this.emitter.emit('snapshot', snapshot);
+  }
+
+  getLastSnapshot(): RegimeSnapshot | null {
+    return this.lastSnapshot;
+  }
+
+  onSnapshot(listener: (snapshot: RegimeSnapshot) => void): () => void {
+    this.emitter.on('snapshot', listener);
+    return () => this.emitter.off('snapshot', listener);
+  }
 
   async buildRegimeSnapshot(
     symbols: string[],
@@ -289,7 +309,9 @@ export class RegimeService {
       }),
     );
 
-    return { ts: now.toISOString(), market, sectors, tickers };
+    const snapshot = { ts: now.toISOString(), market, sectors, tickers };
+    this.recordSnapshot(snapshot);
+    return snapshot;
   }
 }
 
