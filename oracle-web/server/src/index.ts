@@ -19,6 +19,7 @@ import { moderatorAlertService } from './services/moderatorAlertService.js';
 import { buildSymbolDetail } from './services/symbolDetailService.js';
 import { buildSignalsInbox } from './services/signalsService.js';
 import { journalHistoryService } from './services/journalHistoryService.js';
+import { registerRawApi } from './rawApi.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +57,9 @@ app.get('/api/health', (_req, res) => {
     marketStatus: getMarketStatus(),
   });
 });
+
+// Bot-consumption surface for stock_o_bot. Localhost-only; no auth.
+registerRawApi(app);
 
 app.get('/api/watchlist', (_req, res) => {
   const stocks = priceSocketServer.getStockStates();
