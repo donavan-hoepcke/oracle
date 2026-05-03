@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 
 export type SetupTag =
   | 'gap_and_go'
@@ -83,6 +84,11 @@ const SYMBOL_STOPWORDS = new Set([
 class MessageService {
   private events: MessageEvent[] = [];
   private readonly maxEvents = 5000;
+  private emitter = new EventEmitter();
+
+  constructor() {
+    this.emitter.setMaxListeners(0);
+  }
 
   ingest(input: MessageEventInput): MessageEvent {
     const text = (input.text ?? '').trim();
@@ -108,7 +114,13 @@ class MessageService {
       this.events.splice(0, this.events.length - this.maxEvents);
     }
 
+    this.emitter.emit('ingest', event);
     return event;
+  }
+
+  onIngest(listener: (event: MessageEvent) => void): () => void {
+    this.emitter.on('ingest', listener);
+    return () => this.emitter.off('ingest', listener);
   }
 
   ingestMany(inputs: MessageEventInput[]): MessageEvent[] {

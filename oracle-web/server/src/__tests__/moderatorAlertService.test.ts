@@ -14,7 +14,11 @@ vi.mock('../config.js', () => ({
   },
 }));
 
-import { parseModeratorAlertText } from '../services/moderatorAlertService.js';
+import {
+  parseModeratorAlertText,
+  moderatorAlertService,
+  type ModeratorPost,
+} from '../services/moderatorAlertService.js';
 
 // Excerpt of the Daily Market Profits room innerText — two alert posts and a
 // backup-ideas post, each closed by the 4-line type/rooms/author/timestamp
@@ -156,5 +160,44 @@ Apr 13, 2026 6:40 AM
       { symbol: 'RMSG', price: 1.18, note: 'Double tap on' },
       { symbol: 'IMA', price: 5.6, note: null },
     ]);
+  });
+});
+
+describe('moderatorAlertService onAlerts subscription', () => {
+  const samplePost: ModeratorPost = {
+    title: 'Daily Market Profits Alert 5-2-2026',
+    kind: 'alert',
+    author: 'Tim Bohen',
+    postedAt: '2026-05-02T13:42:00.000Z',
+    body: '$ABCD\n\nSignal: $4.20\nRisk Zone: $3.95\nTarget: $4.80+',
+    signal: {
+      symbol: 'ABCD',
+      signal: 4.2,
+      riskZone: 3.95,
+      target: '$4.80+',
+      targetFloor: 4.8,
+    },
+    backups: [],
+  };
+
+  it('fires the listener when ingestPosts is called and stops after unsubscribe', () => {
+    const captured: ModeratorPost[][] = [];
+    const unsub = moderatorAlertService.onAlerts((posts) => captured.push(posts));
+    moderatorAlertService.ingestPosts([samplePost]);
+    moderatorAlertService.ingestPosts([samplePost, samplePost]);
+    unsub();
+    moderatorAlertService.ingestPosts([samplePost]);
+    expect(captured.length).toBe(2);
+    expect(captured[0]).toHaveLength(1);
+    expect(captured[1]).toHaveLength(2);
+    expect(captured[0][0].signal?.symbol).toBe('ABCD');
+  });
+
+  it('updates the snapshot when ingestPosts is called', () => {
+    moderatorAlertService.ingestPosts([samplePost]);
+    const snapshot = moderatorAlertService.getSnapshot();
+    expect(snapshot.posts).toHaveLength(1);
+    expect(snapshot.posts[0].signal?.symbol).toBe('ABCD');
+    expect(snapshot.fetchedAt).not.toBeNull();
   });
 });

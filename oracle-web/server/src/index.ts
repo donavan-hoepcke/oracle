@@ -19,6 +19,11 @@ import { moderatorAlertService } from './services/moderatorAlertService.js';
 import { buildSymbolDetail } from './services/symbolDetailService.js';
 import { buildSignalsInbox } from './services/signalsService.js';
 import { journalHistoryService } from './services/journalHistoryService.js';
+import { registerRawApi } from './rawApi.js';
+import { tickerBotService } from './services/tickerBotService.js';
+import { regimeService } from './services/regimeService.js';
+import { rawStreamService } from './services/rawStreamService.js';
+import { attachRawStreamSocket } from './websocket/rawStreamSocket.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +61,9 @@ app.get('/api/health', (_req, res) => {
     marketStatus: getMarketStatus(),
   });
 });
+
+// Bot-consumption surface for stock_o_bot. Localhost-only; no auth.
+registerRawApi(app);
 
 app.get('/api/watchlist', (_req, res) => {
   const stocks = priceSocketServer.getStockStates();
@@ -617,6 +625,15 @@ if (existsSync(distPath)) {
 
 // Initialize WebSocket server
 priceSocketServer.initialize(server);
+
+// Bot-consumption stream: bind producer services to the unified emitter and
+// expose the fan-out WebSocket at /api/raw/stream. Additive; does not affect
+// the existing /ws UI socket.
+rawStreamService.bindMessageService(messageService);
+rawStreamService.bindModeratorAlertService(moderatorAlertService);
+rawStreamService.bindRegimeService(regimeService);
+rawStreamService.bindTickerBotService(tickerBotService);
+attachRawStreamSocket(server, rawStreamService);
 
 // Rehydrate today's closed-trade ledger from the JSONL recording so a
 // server restart mid-session doesn't lose the realized trade log, then

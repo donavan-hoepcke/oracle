@@ -120,4 +120,16 @@ describe('messageService', () => {
       expect(event.tags).toContain('news_pop');
     });
   });
+
+  describe('onIngest subscription', () => {
+    it('fires the listener for every ingest call and stops after unsubscribe', () => {
+      const seen: string[] = [];
+      const unsub = messageService.onIngest((evt) => seen.push(evt.id));
+      const a = messageService.ingest({ text: 'AAPL gap and go' });
+      const b = messageService.ingest({ text: 'TSLA breakout' });
+      unsub();
+      messageService.ingest({ text: 'NVDA' });
+      expect(seen).toEqual([a.id, b.id]);
+    });
+  });
 });

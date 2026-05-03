@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 
 export interface ModeratorSignal {
@@ -201,9 +202,24 @@ export class ModeratorAlertService {
   private snapshot: ModeratorAlertSnapshot = { fetchedAt: null, posts: [], error: null };
   private pollTimer: NodeJS.Timeout | null = null;
   private inFlight = false;
+  private emitter = new EventEmitter();
+
+  constructor() {
+    this.emitter.setMaxListeners(0);
+  }
 
   getSnapshot(): ModeratorAlertSnapshot {
     return this.snapshot;
+  }
+
+  ingestPosts(posts: ModeratorPost[]): void {
+    this.snapshot = { fetchedAt: new Date().toISOString(), posts, error: null };
+    this.emitter.emit('alerts', posts);
+  }
+
+  onAlerts(listener: (posts: ModeratorPost[]) => void): () => void {
+    this.emitter.on('alerts', listener);
+    return () => this.emitter.off('alerts', listener);
   }
 
   async start(): Promise<void> {
@@ -233,7 +249,7 @@ export class ModeratorAlertService {
     try {
       const text = await this.fetchPageText();
       const posts = parseModeratorAlertText(text);
-      this.snapshot = { fetchedAt: new Date().toISOString(), posts, error: null };
+      this.ingestPosts(posts);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.snapshot = { ...this.snapshot, error: msg };
