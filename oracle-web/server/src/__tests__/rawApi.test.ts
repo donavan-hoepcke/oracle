@@ -51,3 +51,13 @@ describe('GET /api/raw/symbols/:sym', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('GET /api/raw/regime', () => {
+  it('returns 200 with snapshot field (possibly null) and timestamp', async () => {
+    const res = await fetch(`${url}/api/raw/regime`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ts: string; snapshot: unknown };
+    expect(typeof body.ts).toBe('string');
+    expect('snapshot' in body).toBe(true);
+  });
+});

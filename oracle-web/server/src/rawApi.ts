@@ -20,6 +20,13 @@ export function registerRawApi(app: Express): void {
     });
   });
 
+  app.get('/api/raw/regime', (_req, res) => {
+    res.json({
+      ts: new Date().toISOString(),
+      snapshot: regimeService.getLastSnapshot(),
+    });
+  });
+
   app.get('/api/raw/symbols/:sym', async (req, res) => {
     const raw = typeof req.params.sym === 'string' ? req.params.sym.trim() : '';
     if (!/^[A-Za-z][A-Za-z0-9.-]{0,9}$/.test(raw)) {
