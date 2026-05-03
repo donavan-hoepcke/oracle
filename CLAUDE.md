@@ -80,6 +80,17 @@ Chrome (debug port) -> Playwright scraper -> WatchlistItem
 - `POST /api/execution/flatten` — Emergency flatten of all positions.
 - `GET /api/trade-candidates` — Current ranked candidates.
 
+### Raw API (bot-consumption surface)
+
+Used by the sibling `stock_o_bot` Python service. Localhost-only; no auth in v1. Additive to the existing rule engine and UI; no behavior change to those.
+
+- `GET /api/raw/scanner` — Full `WatchlistItem[]` snapshot with timestamp.
+- `GET /api/raw/symbols/:sym` — Symbol detail envelope (indicators, recent bars, sector, regime context, moderator references).
+- `GET /api/raw/regime` — Most recent `RegimeSnapshot` or `null` if none has been computed yet.
+- `WS /api/raw/stream` — Push channel emitting `scanner_update` / `message` / `mod_alert` / `regime_shift` events. Events have monotonically increasing `id` and ISO `ts`. Honors `Last-Event-ID` request header on connect to replay buffered events with id greater than that value (ring buffer of 1000 events by default).
+
+Service plumbing for the WS source is in `oracle-web/server/src/services/rawStreamService.ts` (a single emitter that subscribes to `messageService.onIngest`, `moderatorAlertService.onAlerts`, `regimeService.onSnapshot`, and `tickerBotService.onWatchlistChange`).
+
 ## Configuration
 
 ### Environment (`oracle-web/.env`)
