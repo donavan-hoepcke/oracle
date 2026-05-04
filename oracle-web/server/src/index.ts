@@ -16,6 +16,7 @@ import { floatMapService } from './services/floatMapService.js';
 import { sectorHotnessService } from './services/sectorHotnessService.js';
 import { sectorMapService } from './services/sectorMapService.js';
 import { moderatorAlertService } from './services/moderatorAlertService.js';
+import { incomeTraderChatService } from './services/incomeTraderChatService.js';
 import { buildSymbolDetail } from './services/symbolDetailService.js';
 import { buildSignalsInbox } from './services/signalsService.js';
 import { journalHistoryService } from './services/journalHistoryService.js';
@@ -189,6 +190,10 @@ app.get('/api/sector-hotness', (_req, res) => {
 
 app.get('/api/moderator-alerts', (_req, res) => {
   res.json(moderatorAlertService.getSnapshot());
+});
+
+app.get('/api/raw/income-trader-tickers', (_req, res) => {
+  res.json(incomeTraderChatService.getSnapshot());
 });
 
 app.get('/api/trade-candidates', async (_req, res) => {
@@ -693,6 +698,15 @@ moderatorAlertService.start().catch((err) => {
   console.warn('moderatorAlerts start failed:', err instanceof Error ? err.message : err);
 });
 
+// Start Daily Income Trader chat polling for the right-rail "Today's Tickers"
+// panel and the chat transcript itself (no-op when disabled).
+incomeTraderChatService.start().catch((err) => {
+  console.warn(
+    'incomeTraderChat start failed:',
+    err instanceof Error ? err.message : err,
+  );
+});
+
 // Start server
 server.listen(config.port, () => {
   console.log(`Oracle server running on http://localhost:${config.port}`);
@@ -706,6 +720,7 @@ process.on('SIGINT', () => {
   floatMapService.stop().catch(() => {});
   sectorHotnessService.stop().catch(() => {});
   moderatorAlertService.stop().catch(() => {});
+  incomeTraderChatService.stop().catch(() => {});
   server.close(() => {
     process.exit(0);
   });

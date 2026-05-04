@@ -87,6 +87,7 @@ Used by the sibling `stock_o_bot` Python service. Localhost-only; no auth in v1.
 - `GET /api/raw/scanner` — Full `WatchlistItem[]` snapshot with timestamp.
 - `GET /api/raw/symbols/:sym` — Symbol detail envelope (indicators, recent bars, sector, regime context, moderator references).
 - `GET /api/raw/regime` — Most recent `RegimeSnapshot` or `null` if none has been computed yet.
+- `GET /api/raw/income-trader-tickers` — Snapshot of the Daily Income Trader chat room's right-rail "Today's Tickers" panel: `{ fetchedAt, moderatorPicks: [...], communityMentions: [...], error }`. Each ticker carries `symbol`, `changePct`, `price`, `section`. The same scraper also re-emits chat transcript messages through `messageService` so they flow out via `/api/messages` and `WS /api/raw/stream` (event kind `message`) — channel `income_trader_chat`, author either `moderator_picks` / `community_mentions` for ticker rows or the actual chat author for transcript lines.
 - `WS /api/raw/stream` — Push channel emitting `scanner_update` / `message` / `mod_alert` / `regime_shift` events. Events have monotonically increasing `id` and ISO `ts`. Honors `Last-Event-ID` request header on connect to replay buffered events with id greater than that value (ring buffer of 1000 events by default).
 
 Service plumbing for the WS source is in `oracle-web/server/src/services/rawStreamService.ts` (a single emitter that subscribes to `messageService.onIngest`, `moderatorAlertService.onAlerts`, `regimeService.onSnapshot`, and `tickerBotService.onWatchlistChange`).

@@ -81,6 +81,16 @@ const configSchema = z.object({
           hydration_wait_ms: z.number().int().nonnegative().default(5_000),
         })
         .default({}),
+      incomeTraderChat: z
+        .object({
+          enabled: z.boolean().default(false),
+          url: z
+            .string()
+            .default('https://university.stockstotrade.com/room/daily-income-trader-chat'),
+          poll_interval_sec: z.number().positive().default(60),
+          hydration_wait_ms: z.number().int().nonnegative().default(5_000),
+        })
+        .default({}),
     })
     .default({}),
   execution: z

@@ -52,6 +52,11 @@ bot:
     url: "https://university.stockstotrade.com/room/daily-market-profits"
     poll_interval_sec: 180
     hydration_wait_ms: 5000
+  incomeTraderChat:
+    enabled: true
+    url: "https://university.stockstotrade.com/room/daily-income-trader-chat"
+    poll_interval_sec: 60
+    hydration_wait_ms: 5000
 execution:
   enabled: true
   paper: true
