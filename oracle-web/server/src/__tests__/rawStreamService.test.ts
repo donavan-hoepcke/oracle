@@ -167,12 +167,12 @@ describe('RawStreamService.bind() integration', () => {
     expect(payload.signal_price).toBeNull();
   });
 
-  it('bindModeratorAlertService publishes one mod_alert event per post', () => {
+  it('bindModeratorAlertService publishes one mod_alert event per DISTINCT post', () => {
     const types: string[] = [];
     rawStreamService.subscribe((e) => types.push(e.type));
     rawStreamService.bindModeratorAlertService(moderatorAlertService);
-    const post: ModeratorPost = {
-      title: 'test',
+    const a: ModeratorPost = {
+      title: 'alert A',
       kind: 'alert',
       author: 'mod',
       postedAt: '2026-05-02T13:00:00.000Z',
@@ -180,10 +180,76 @@ describe('RawStreamService.bind() integration', () => {
       signal: null,
       backups: [],
     };
-    moderatorAlertService.ingestPosts([post, post]);
+    const b: ModeratorPost = { ...a, title: 'alert B' };
+    moderatorAlertService.ingestPosts([a, b]);
     rawStreamService.unbindAll();
-    moderatorAlertService.ingestPosts([post]);
+    moderatorAlertService.ingestPosts([a]); // no listener now
     expect(types.filter((t) => t === 'mod_alert')).toHaveLength(2);
+  });
+
+  it('bindModeratorAlertService dedupes repeated posts across poll cycles', () => {
+    // Regression: moderatorAlertService re-scrapes the page on every poll
+    // and re-emits ALL cached posts each time, even ones already announced.
+    // The bridge must dedup by (postedAt, title) so downstream sees each
+    // post once. Without this, the soak burns ~25x the necessary tokens.
+    const types: string[] = [];
+    rawStreamService.subscribe((e) => types.push(e.type));
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const post: ModeratorPost = {
+      title: 'PN signal',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-04T06:43:00.000Z',
+      body: 'Signal: $6.01',
+      signal: { symbol: 'PN', signal: 6.01, riskZone: 5.7, target: null, targetFloor: null },
+      backups: [],
+    };
+    // Three poll cycles, same post each time (mirrors real upstream behavior).
+    moderatorAlertService.ingestPosts([post]);
+    moderatorAlertService.ingestPosts([post]);
+    moderatorAlertService.ingestPosts([post]);
+    expect(types.filter((t) => t === 'mod_alert')).toHaveLength(1);
+  });
+
+  it('bindModeratorAlertService treats a post with new postedAt as new', () => {
+    const types: string[] = [];
+    rawStreamService.subscribe((e) => types.push(e.type));
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const base: ModeratorPost = {
+      title: 'PN signal',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-04T06:43:00.000Z',
+      body: '',
+      signal: null,
+      backups: [],
+    };
+    moderatorAlertService.ingestPosts([base]);
+    moderatorAlertService.ingestPosts([{ ...base, postedAt: '2026-05-05T06:43:00.000Z' }]);
+    expect(types.filter((t) => t === 'mod_alert')).toHaveLength(2);
+  });
+
+  it('reset clears the mod_alert dedup cache', () => {
+    const types: string[] = [];
+    rawStreamService.subscribe((e) => types.push(e.type));
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const post: ModeratorPost = {
+      title: 'x',
+      kind: 'alert',
+      author: 'mod',
+      postedAt: '2026-05-02T13:00:00.000Z',
+      body: '',
+      signal: null,
+      backups: [],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.reset();
+    // Re-bind after reset because reset() detaches subscribers too.
+    const types2: string[] = [];
+    rawStreamService.subscribe((e) => types2.push(e.type));
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    moderatorAlertService.ingestPosts([post]);
+    expect(types2.filter((t) => t === 'mod_alert')).toHaveLength(1);
   });
 
   it('bindRegimeService publishes regime_shift events', () => {
