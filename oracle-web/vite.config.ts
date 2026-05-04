@@ -10,6 +10,18 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // The Chrome debug profile lives inside this repo so the Playwright
+    // scraper can attach. Chrome rewrites extension files constantly, which
+    // would otherwise trigger full-page reloads several times a second.
+    watch: {
+      ignored: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/.chrome-profile/**',
+        '**/.chrome-debug-profile/**',
+        '**/.playwright-state/**',
+      ],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
