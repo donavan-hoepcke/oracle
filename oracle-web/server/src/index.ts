@@ -196,6 +196,10 @@ app.get('/api/raw/income-trader-tickers', (_req, res) => {
   res.json(incomeTraderChatService.getSnapshot());
 });
 
+app.get('/api/raw/income-trader-debug', (_req, res) => {
+  res.type('text/plain').send(incomeTraderChatService.getLastRawText());
+});
+
 app.get('/api/trade-candidates', async (_req, res) => {
   const limitRaw = _req.query.limit;
   const limitNum = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : 10;

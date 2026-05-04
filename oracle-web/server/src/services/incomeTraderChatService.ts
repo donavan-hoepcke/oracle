@@ -28,15 +28,26 @@ export interface IncomeTraderSnapshot {
 const SECTION_HEADER_PICKS = /^\s*moderator\s+picks\s*$/i;
 const SECTION_HEADER_MENTIONS = /^\s*community\s+mentions\s*$/i;
 const SECTION_ANCHOR = /^\s*today'?s\s+tickers\s*$/i;
-// "May 4 11:14 AM" or "May 4, 2026 8:43 AM" — chat timestamps inside the
-// transcript. We anchor message blocks on these lines.
+// Chat timestamps come in three flavors observed in innerText:
+//   "May 4, 2026 9:43 AM"   (full date, used by some moderators)
+//   "May 4, 11:31 AM"       (date with comma, no year)
+//   "6:59 am"               (time only — typically pin / system preview)
+// The leading-comma variant is what appears for ordinary messages, so the
+// chat parser MUST handle it correctly.
 const CHAT_TIMESTAMP_RE =
-  /^\s*([A-Z][a-z]{2})\s+(\d{1,2})(?:,\s+(\d{4}))?\s+(\d{1,2}):(\d{2})\s+(AM|PM)\s*$/i;
-// Tickers may or may not be prefixed with "$"; we accept both. Length is
-// capped to 6 chars + optional class suffix to reject narrative noise.
-const TICKER_RE = /^\$?([A-Z][A-Z0-9.-]{0,6})$/;
-const PCT_RE = /^[▲▼\-+]?\s*([\d.]+)\s*%$/;
+  /^\s*([A-Z][a-z]{2})\s+(\d{1,2})(?:,\s+(\d{4}))?,?\s+(\d{1,2}):(\d{2})\s+(AM|PM)\s*$/i;
+// Right-rail rows ALWAYS carry the "$" prefix; the section headers and the
+// per-section total integer underneath them do not. Requiring "$" rejects
+// stray section totals from being treated as tickers.
+const TICKER_RE = /^\$([A-Z][A-Z0-9.-]{0,6})$/;
+const COUNT_RE = /^\d+$/;
+// Signed percent like "+2.71%" / "-20.08%". "0%" also matches.
+const SIGNED_PCT_RE = /^([+\-]?\d+(?:\.\d+)?)\s*%$/;
 const PRICE_RE = /^\$([\d,]*\.?[\d]+)$/;
+// Author lines are sometimes adorned with a single "·" separator placed on
+// its own line between the author and the timestamp. We skip it when
+// resolving the author above a timestamp anchor.
+const SKIP_AUTHOR_LINE_RE = /^[·•\s]*$/;
 
 function parseNumber(raw: string | undefined | null): number | null {
   if (!raw) return null;
@@ -46,9 +57,14 @@ function parseNumber(raw: string | undefined | null): number | null {
 
 /**
  * Parse the right-rail "Today's Tickers" panel as it appears in the chat
- * page's innerText. The rail collapses each row's symbol / change% / price
- * onto adjacent lines, so we walk forward in 3-line groups within each
- * section and tolerate stray blank lines.
+ * page's innerText. Each row is laid out across up to four lines:
+ *   $SYMBOL          (mandatory, "$" prefix is required)
+ *   <count>          (mandatory, integer mention count)
+ *   <±X.XX%>         (optional, signed percent change)
+ *   $<price>         (optional, dollar price)
+ * Section headers ("MODERATOR PICKS" / "COMMUNITY MENTIONS") are followed by
+ * a section-total integer that we skip — only the per-symbol entries are
+ * captured.
  */
 export function parseIncomeTraderTickers(rawText: string): {
   moderatorPicks: IncomeTraderTicker[];
@@ -74,40 +90,42 @@ export function parseIncomeTraderTickers(rawText: string): {
     if (SECTION_HEADER_PICKS.test(line)) {
       current = 'moderator_pick';
       i++;
+      // The line directly under a section header is the section total
+      // (e.g. "9" under MODERATOR PICKS). Skip if it's a bare integer.
+      if (i < lines.length && COUNT_RE.test(lines[i])) i++;
       continue;
     }
     if (SECTION_HEADER_MENTIONS.test(line)) {
       current = 'community_mention';
       i++;
+      if (i < lines.length && COUNT_RE.test(lines[i])) i++;
       continue;
     }
 
     const tickerMatch = line.match(TICKER_RE);
     if (current && tickerMatch) {
       const symbol = tickerMatch[1].toUpperCase();
-      const changeRaw = lines[i + 1]?.match(PCT_RE);
-      const priceRaw = lines[i + 2]?.match(PRICE_RE);
-      // Direction for change% is encoded in arrows we don't preserve in
-      // innerText reliably. The chat shows green for up, red for down, but
-      // text-only loses that — so we keep the magnitude only. Bot consumers
-      // can look up direction from /api/scanner if needed.
-      const changePct = changeRaw ? parseNumber(changeRaw[1]) : null;
-      const price = priceRaw ? parseNumber(priceRaw[1]) : null;
+      let cursor = i + 1;
+      // Per-symbol count comes immediately after the ticker.
+      if (cursor < lines.length && COUNT_RE.test(lines[cursor])) cursor++;
+      // Optional signed percent change.
+      const pctMatch = cursor < lines.length ? lines[cursor].match(SIGNED_PCT_RE) : null;
+      const changePct = pctMatch ? parseNumber(pctMatch[1]) : null;
+      if (pctMatch) cursor++;
+      // Optional dollar price.
+      const priceMatch = cursor < lines.length ? lines[cursor].match(PRICE_RE) : null;
+      const price = priceMatch ? parseNumber(priceMatch[1]) : null;
+      if (priceMatch) cursor++;
 
-      // Require at least price OR changePct to consider this a real row;
-      // the rail occasionally has standalone tokens between sections that
-      // would otherwise create empty entries.
-      if (changePct !== null || price !== null) {
-        const dedupeKey = `${current}:${symbol}`;
-        if (!seenInScrape.has(dedupeKey)) {
-          seenInScrape.add(dedupeKey);
-          const row: IncomeTraderTicker = { symbol, changePct, price, section: current };
-          if (current === 'moderator_pick') moderatorPicks.push(row);
-          else communityMentions.push(row);
-        }
-        i += 3;
-        continue;
+      const dedupeKey = `${current}:${symbol}`;
+      if (!seenInScrape.has(dedupeKey)) {
+        seenInScrape.add(dedupeKey);
+        const row: IncomeTraderTicker = { symbol, changePct, price, section: current };
+        if (current === 'moderator_pick') moderatorPicks.push(row);
+        else communityMentions.push(row);
       }
+      i = cursor;
+      continue;
     }
     i++;
   }
@@ -157,17 +175,23 @@ export function parseIncomeTraderChat(rawText: string): IncomeTraderChatMessage[
     const ts = tsIndices[k];
     const next = k + 1 < tsIndices.length ? tsIndices[k + 1] : upper;
 
-    // Author is the nearest non-empty line above the timestamp. Skip blank
-    // separator lines and lines that look like another timestamp / cashtag.
+    // Author is the nearest meaningful line above the timestamp. Skip blank
+    // lines and the "·" / "•" separators that some moderator messages
+    // place between author and timestamp. Stop if we'd walk into the
+    // previous message's body — body lines often contain dollar signs or
+    // mentions that would otherwise confuse author detection.
     let authorIdx = ts - 1;
-    while (authorIdx > 0 && lines[authorIdx] === '') authorIdx--;
+    while (authorIdx > 0 && SKIP_AUTHOR_LINE_RE.test(lines[authorIdx])) authorIdx--;
     if (authorIdx < 0) continue;
     const author = lines[authorIdx];
     if (!author || CHAT_TIMESTAMP_RE.test(author)) continue;
 
-    // Body starts after the timestamp; ends at the line BEFORE the next
-    // message's author (which is the line before the next timestamp).
-    const bodyEnd = k + 1 < tsIndices.length ? tsIndices[k + 1] - 1 : next;
+    // Body ends at the next message's author line. That line is normally
+    // tsIndices[k+1] - 1, but moderator messages can have a "·" separator
+    // between author and timestamp, so we walk upward over skip-lines to
+    // find the actual author index. The body loop then excludes it.
+    let bodyEnd = k + 1 < tsIndices.length ? tsIndices[k + 1] - 1 : next;
+    while (bodyEnd > ts && SKIP_AUTHOR_LINE_RE.test(lines[bodyEnd])) bodyEnd--;
     const bodyLines: string[] = [];
     for (let i = ts + 1; i < bodyEnd; i++) {
       if (lines[i] !== '') bodyLines.push(lines[i]);
@@ -212,6 +236,7 @@ class IncomeTraderChatService {
   // tail — without dedup we'd flood messageService.
   private ingestedChatHashes = new Set<string>();
   private readonly chatHashCap = 5_000;
+  private lastRawText = '';
 
   constructor() {
     this.emitter.setMaxListeners(0);
@@ -219,6 +244,11 @@ class IncomeTraderChatService {
 
   getSnapshot(): IncomeTraderSnapshot {
     return this.snapshot;
+  }
+
+  /** Diagnostic: the last raw page text we scraped, for debugging parsers. */
+  getLastRawText(): string {
+    return this.lastRawText;
   }
 
   /** Test seam — push a parsed snapshot directly without touching Playwright. */
@@ -268,6 +298,7 @@ class IncomeTraderChatService {
     this.inFlight = true;
     try {
       const text = await this.fetchPageText();
+      this.lastRawText = text;
       const { moderatorPicks, communityMentions } = parseIncomeTraderTickers(text);
       this.applyParsed(moderatorPicks, communityMentions);
       const chatMessages = parseIncomeTraderChat(text);
