@@ -34,6 +34,65 @@ interface AlertsHookSource {
   onAlerts: (cb: (posts: unknown[]) => void) => () => void;
 }
 
+interface BotShapedModAlert {
+  // Top-level convenience fields the bot uses for routing + summary.
+  symbol: string | null;
+  signal_price: number | null;
+  risk_zone: number | null;
+  target_floor: number | null;
+  target: string | null;
+  // Original post fields, with body excerpted to keep the WS payload small
+  // (the bot truncates payload summaries at 240 chars; a full prep post body
+  // is ~1500 chars and hides the structured fields from the agent prompt).
+  title: string;
+  kind: string;
+  author: string;
+  posted_at: string | null;
+  body_excerpt: string;
+  backups: unknown[];
+}
+
+const BODY_EXCERPT_CHARS = 400;
+
+interface ParsedSignalLike {
+  symbol: string;
+  signal: number | null;
+  riskZone: number | null;
+  targetFloor: number | null;
+  target: string | null;
+}
+
+interface PostLike {
+  title?: unknown;
+  kind?: unknown;
+  author?: unknown;
+  postedAt?: unknown;
+  body?: unknown;
+  signal?: unknown;
+  backups?: unknown;
+}
+
+function shapeModAlertForBot(post: unknown): BotShapedModAlert {
+  const p = (post ?? {}) as PostLike;
+  const sig = (p.signal ?? null) as ParsedSignalLike | null;
+  const body = typeof p.body === 'string' ? p.body : '';
+  const bodyExcerpt =
+    body.length <= BODY_EXCERPT_CHARS ? body : body.slice(0, BODY_EXCERPT_CHARS) + '…';
+  return {
+    symbol: sig?.symbol ?? null,
+    signal_price: sig?.signal ?? null,
+    risk_zone: sig?.riskZone ?? null,
+    target_floor: sig?.targetFloor ?? null,
+    target: sig?.target ?? null,
+    title: typeof p.title === 'string' ? p.title : '',
+    kind: typeof p.kind === 'string' ? p.kind : 'other',
+    author: typeof p.author === 'string' ? p.author : '',
+    posted_at: typeof p.postedAt === 'string' ? p.postedAt : null,
+    body_excerpt: bodyExcerpt,
+    backups: Array.isArray(p.backups) ? p.backups : [],
+  };
+}
+
 interface SnapshotHookSource {
   onSnapshot: (cb: (snapshot: unknown) => void) => () => void;
 }
@@ -88,7 +147,7 @@ export class RawStreamService {
   bindModeratorAlertService(svc: AlertsHookSource): void {
     const off = svc.onAlerts((posts) => {
       for (const post of posts) {
-        this.publish({ type: 'mod_alert', payload: post });
+        this.publish({ type: 'mod_alert', payload: shapeModAlertForBot(post) });
       }
     });
     this.unsubscribeFns.push(off);
