@@ -5,6 +5,17 @@ import WebSocket from 'ws';
 import { rawStreamService } from '../services/rawStreamService.js';
 import { attachRawStreamSocket } from '../websocket/rawStreamSocket.js';
 
+function wireRawStream(server: Server) {
+  const handle = attachRawStreamSocket(rawStreamService);
+  server.on('upgrade', (req, socket, head) => {
+    if ((req.url || '').split('?')[0] === '/api/raw/stream') {
+      handle.handleUpgrade(req, socket, head);
+    } else {
+      socket.destroy();
+    }
+  });
+}
+
 describe('WS /api/raw/stream', () => {
   let server: Server;
   let port: number;
@@ -13,7 +24,7 @@ describe('WS /api/raw/stream', () => {
     rawStreamService.reset();
     const app = express();
     server = createServer(app);
-    attachRawStreamSocket(server, rawStreamService);
+    wireRawStream(server);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address();
     if (addr && typeof addr !== 'string') port = addr.port;
@@ -47,7 +58,7 @@ describe('WS /api/raw/stream resume', () => {
     rawStreamService.reset();
     const app = express();
     server = createServer(app);
-    attachRawStreamSocket(server, rawStreamService);
+    wireRawStream(server);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address();
     if (addr && typeof addr !== 'string') port = addr.port;

@@ -623,8 +623,8 @@ if (existsSync(distPath)) {
   });
 }
 
-// Initialize WebSocket server
-priceSocketServer.initialize(server);
+// Initialize WebSocket servers (both noServer: true; routed below).
+priceSocketServer.initialize();
 
 // Bot-consumption stream: bind producer services to the unified emitter and
 // expose the fan-out WebSocket at /api/raw/stream. Additive; does not affect
@@ -633,7 +633,25 @@ rawStreamService.bindMessageService(messageService);
 rawStreamService.bindModeratorAlertService(moderatorAlertService);
 rawStreamService.bindRegimeService(regimeService);
 rawStreamService.bindTickerBotService(tickerBotService);
-attachRawStreamSocket(server, rawStreamService);
+const rawStreamSocketHandle = attachRawStreamSocket(rawStreamService);
+
+// Single upgrade router: dispatch each WS upgrade by URL path. Required
+// because the `ws` library's per-WebSocketServer upgrade listeners conflict
+// when multiple servers attach to the same HTTP server, causing the first-
+// registered listener to reject paths it doesn't own with HTTP 400.
+server.on('upgrade', (req, socket, head) => {
+  const url = req.url || '';
+  // Strip any query string before path matching.
+  const path = url.split('?')[0];
+  if (path === '/ws') {
+    priceSocketServer.handleUpgrade(req, socket, head);
+  } else if (path === '/api/raw/stream') {
+    rawStreamSocketHandle.handleUpgrade(req, socket, head);
+  } else {
+    socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+  }
+});
 
 // Rehydrate today's closed-trade ledger from the JSONL recording so a
 // server restart mid-session doesn't lose the realized trade log, then
