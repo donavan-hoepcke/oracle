@@ -79,6 +79,94 @@ describe('RawStreamService.bind() integration', () => {
     expect(seen.some((e) => e.type === 'message')).toBe(true);
   });
 
+  it('bindModeratorAlertService hoists symbol/signal_price to top-level payload', () => {
+    // Regression: the bot's RawEvent.symbol field is read from payload.symbol
+    // at the top level. Without hoisting, the bot saw symbol=None and treated
+    // every signal-bearing alert as editorial commentary.
+    const captured: unknown[] = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'mod_alert') captured.push(e.payload);
+    });
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const post: ModeratorPost = {
+      title: 'Pre-Market Prep',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-04T10:43:00.000Z',
+      body: 'long body content with the alert embedded inside the prep post...',
+      signal: {
+        symbol: 'PN',
+        signal: 6.01,
+        riskZone: 5.7,
+        target: "Mid to high $6's",
+        targetFloor: 6,
+      },
+      backups: [{ symbol: 'CNSP', price: 10.65, note: null }],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.unbindAll();
+
+    expect(captured).toHaveLength(1);
+    const payload = captured[0] as Record<string, unknown>;
+    expect(payload.symbol).toBe('PN');
+    expect(payload.signal_price).toBeCloseTo(6.01);
+    expect(payload.risk_zone).toBeCloseTo(5.7);
+    expect(payload.target_floor).toBeCloseTo(6);
+    expect(payload.target).toBe("Mid to high $6's");
+    expect(payload.title).toBe('Pre-Market Prep');
+    expect(payload.kind).toBe('pre_market_prep');
+    expect(payload.posted_at).toBe('2026-05-04T10:43:00.000Z');
+    expect(payload.backups).toEqual([{ symbol: 'CNSP', price: 10.65, note: null }]);
+  });
+
+  it('bindModeratorAlertService excerpts long bodies to keep payload small', () => {
+    const captured: unknown[] = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'mod_alert') captured.push(e.payload);
+    });
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const longBody = 'x'.repeat(2000);
+    const post: ModeratorPost = {
+      title: 'Pre-Market Prep',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: null,
+      body: longBody,
+      signal: null,
+      backups: [],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.unbindAll();
+
+    const payload = captured[0] as Record<string, unknown>;
+    const excerpt = payload.body_excerpt as string;
+    expect(excerpt.length).toBeLessThanOrEqual(401); // 400 + 1 ellipsis char
+    expect(excerpt.endsWith('…')).toBe(true);
+  });
+
+  it('bindModeratorAlertService leaves symbol null when no signal was parsed', () => {
+    const captured: unknown[] = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'mod_alert') captured.push(e.payload);
+    });
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const post: ModeratorPost = {
+      title: 'Pre-Market Prep',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: null,
+      body: 'just commentary, no signal block today',
+      signal: null,
+      backups: [],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.unbindAll();
+
+    const payload = captured[0] as Record<string, unknown>;
+    expect(payload.symbol).toBeNull();
+    expect(payload.signal_price).toBeNull();
+  });
+
   it('bindModeratorAlertService publishes one mod_alert event per post', () => {
     const types: string[] = [];
     rawStreamService.subscribe((e) => types.push(e.type));

@@ -181,8 +181,13 @@ export function parseModeratorAlertText(raw: string): ModeratorPost[] {
     const postLines = bodyLines.slice(titleIdx);
     const title = postLines[0];
     const kind = classify(title);
-    const signal = kind === 'alert' ? extractSignal(postLines) : null;
-    const backups = kind === 'alert' || kind === 'backups' ? extractBackups(postLines) : [];
+    // Signals and backups can appear in ANY post kind. Tim Bohen often publishes
+    // the day's actionable trade as a "Pre-Market Prep" post that embeds a full
+    // "Signal: $X.XX / Risk Zone: $Y.YY / Target: ..." block. Restricting
+    // extraction to kind==='alert' missed these. We always run the extractors;
+    // they return null/empty when no Signal: line is present.
+    const signal = extractSignal(postLines);
+    const backups = extractBackups(postLines);
 
     posts.push({
       title,
