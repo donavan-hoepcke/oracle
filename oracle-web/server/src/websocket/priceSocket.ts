@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import { Server } from 'http';
+import type { IncomingMessage } from 'http';
+import type { Duplex } from 'stream';
 import { config } from '../config.js';
 import { getPrices, PriceData } from '../services/priceService.js';
 import { getMarketStatus, MarketStatus } from '../services/marketHoursService.js';
@@ -68,8 +69,11 @@ class PriceSocketServer {
   private readonly TREND_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
   private fetchInFlight = false;
 
-  initialize(server: Server): void {
-    this.wss = new WebSocketServer({ server, path: '/ws' });
+  initialize(): void {
+    // `noServer: true` so multiple WS endpoints can coexist on one HTTP server.
+    // Path routing happens in the single `server.on('upgrade', ...)` listener
+    // in index.ts, which calls handleUpgrade() below.
+    this.wss = new WebSocketServer({ noServer: true });
 
     this.wss.on('connection', (ws: WebSocket) => {
       console.log('Client connected');
@@ -97,6 +101,16 @@ class PriceSocketServer {
     // Start price polling
     this.startPricePolling().catch((err) => {
       console.error('Failed to start price polling:', err);
+    });
+  }
+
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    if (!this.wss) {
+      socket.destroy();
+      return;
+    }
+    this.wss.handleUpgrade(req, socket, head, (ws) => {
+      this.wss!.emit('connection', ws, req);
     });
   }
 

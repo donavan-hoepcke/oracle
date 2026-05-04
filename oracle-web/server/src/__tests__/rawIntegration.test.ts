@@ -18,7 +18,14 @@ describe('raw API + WS end-to-end', () => {
     app.use(express.json());
     registerRawApi(app);
     server = createServer(app);
-    attachRawStreamSocket(server, rawStreamService);
+    const handle = attachRawStreamSocket(rawStreamService);
+    server.on('upgrade', (req, socket, head) => {
+      if ((req.url || '').split('?')[0] === '/api/raw/stream') {
+        handle.handleUpgrade(req, socket, head);
+      } else {
+        socket.destroy();
+      }
+    });
     rawStreamService.bindMessageService(messageService);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address();
