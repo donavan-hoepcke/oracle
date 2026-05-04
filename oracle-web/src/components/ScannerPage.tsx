@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { JournalSnapshot, ScannerRow, ScannerSnapshot, ScannerStatus } from '../types';
 import { ZoneBar } from './ZoneBar';
 import { AccountSummaryCard } from './AccountSummaryCard';
+import { ActiveTradesStrip } from './ActiveTradesStrip';
 
 interface ScannerPageProps {
   snapshot: ScannerSnapshot | null;
@@ -191,6 +192,8 @@ export function ScannerPage({
         error={journalError}
         onRefresh={journalRefresh}
       />
+
+      <ActiveTradesStrip snapshot={journalSnapshot} />
 
       {/* Filter bar */}
       <div className="bg-white rounded-lg shadow p-3 flex flex-wrap items-center gap-2 text-sm">
