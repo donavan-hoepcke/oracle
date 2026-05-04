@@ -163,12 +163,14 @@ describe('ExecutionService', () => {
 
       // Price moves to 1R (0.50 + 0.05 = 0.55). MFE lock at 50% giveback
       // pulls the stop to entry + 0.5R = 0.525, which beats the bare-breakeven
-      // 0.50. State marker flips to 'breakeven' to reflect the tier progression.
+      // 0.50. The state stays 'mfe_lock' because the MFE stop is the binding
+      // level — labeling it 'breakeven' would mislead the operator into
+      // thinking the trade is back to flat.
       await service.onPriceCycle([], [makeStockState('AGAE', 0.55)]);
 
       const trade = service.getActiveTrades().find(t => t.symbol === 'AGAE');
       expect(trade?.currentStop).toBeCloseTo(0.525, 3);
-      expect(trade?.trailingState).toBe('breakeven');
+      expect(trade?.trailingState).toBe('mfe_lock');
     });
 
     it('does not move stop when MFE stays below the give-back activation threshold', async () => {
@@ -225,7 +227,7 @@ describe('ExecutionService', () => {
       expect(ledger[0].pnl).toBeGreaterThan(0);
     });
 
-    it('keeps the 1R breakeven tier when MFE lock is tighter-or-equal at 1R', async () => {
+    it('keeps the mfe_lock label when MFE has the stop above entry at 1R', async () => {
       const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
       await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
 
@@ -233,13 +235,14 @@ describe('ExecutionService', () => {
       await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
 
       // Peak at exactly 1R (0.55). MFE stop = entry + 0.5R = 0.525, breakeven = 0.50.
-      // The 1R tier flips the state label to 'breakeven' as a progression marker,
-      // but the MFE lock is tighter so it wins the currentStop via Math.max.
+      // currentStop wins via Math.max (0.525 > 0.50). State stays 'mfe_lock'
+      // since entry is not the binding level — calling this 'breakeven' would
+      // hide the locked R-multiple from the operator.
       await service.onPriceCycle([], [makeStockState('AGAE', 0.55)]);
 
       const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
       expect(trade?.currentStop).toBeCloseTo(0.525, 3);
-      expect(trade?.trailingState).toBe('breakeven');
+      expect(trade?.trailingState).toBe('mfe_lock');
     });
 
     it('falls back to broker position price when symbol drops off the Oracle watchlist', async () => {
@@ -260,7 +263,7 @@ describe('ExecutionService', () => {
 
       const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
       expect(trade?.currentStop).toBeCloseTo(0.525, 3);
-      expect(trade?.trailingState).toBe('breakeven');
+      expect(trade?.trailingState).toBe('mfe_lock');
     });
 
     it('trails at 1R behind after 2R', async () => {
