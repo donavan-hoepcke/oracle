@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import { alpacaOrderService } from './alpacaOrderService.js';
+import { alpacaOrderService, type AlpacaPosition } from './alpacaOrderService.js';
 import { tradeFilterService, AccountState } from './tradeFilterService.js';
 import { TradeCandidate, CandidateSetup } from './ruleEngineService.js';
 import { StockState } from '../websocket/priceSocket.js';
@@ -221,16 +221,42 @@ export class ExecutionService {
     await this.reconcileWithAlpaca(stocks);
   }
 
+  /** Build a price map from Oracle stocks, falling back to broker positions
+   *  for symbols Oracle isn't currently scraping. Adopted positions can fall
+   *  off the Oracle watchlist; without this fallback their trailing stops
+   *  would never advance.
+   */
+  private buildPriceMap(
+    stocks: StockState[],
+    positions: AlpacaPosition[] | null,
+  ): Map<string, number> {
+    const priceMap = new Map<string, number>();
+    for (const s of stocks) {
+      if (s.currentPrice !== null && s.currentPrice !== undefined) {
+        priceMap.set(s.symbol, s.currentPrice);
+      }
+    }
+    if (positions) {
+      for (const p of positions) {
+        if (priceMap.has(p.symbol)) continue;
+        if (Number.isFinite(p.currentPrice) && p.currentPrice > 0) {
+          priceMap.set(p.symbol, p.currentPrice);
+        }
+      }
+    }
+    return priceMap;
+  }
+
   async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[], regime?: RegimeSnapshot): Promise<void> {
     await this.refreshWashSaleSymbols();
-    await this.reconcileWithAlpaca(stocks);
+    const positions = await this.reconcileWithAlpaca(stocks);
 
     const account = await this.buildAccountState();
     const reservedSymbols = await this.getReservedSymbols();
 
     await this.checkPendingOrders();
     await this.cancelStaleOrders();
-    await this.manageFilled(stocks);
+    await this.manageFilled(stocks, positions);
     if (!this.enabled) return;
     await this.evaluateNewEntries(candidates, account, reservedSymbols, regime);
   }
@@ -241,7 +267,7 @@ export class ExecutionService {
    * positions remain at the broker. Uses the live Oracle watchlist for stop
    * and target where available; falls back to max_risk_pct-derived defaults.
    */
-  private async reconcileWithAlpaca(stocks: StockState[]): Promise<void> {
+  private async reconcileWithAlpaca(stocks: StockState[]): Promise<AlpacaPosition[] | null> {
     let positions;
     let openOrders;
     try {
@@ -251,7 +277,7 @@ export class ExecutionService {
       ]);
     } catch (err) {
       console.error('Reconcile failed:', err);
-      return;
+      return null;
     }
     // A position with an open sell order means a close is already in flight
     // (either submitted by us this cycle, or queued by Alpaca for the next
@@ -322,6 +348,7 @@ export class ExecutionService {
           `stop=${initialStop.toFixed(3)} target=${target.toFixed(3)}`,
       );
     }
+    return positions;
   }
 
   /**
@@ -537,8 +564,11 @@ export class ExecutionService {
     }
   }
 
-  private async manageFilled(stocks: StockState[]): Promise<void> {
-    const priceMap = new Map(stocks.map(s => [s.symbol, s.currentPrice]));
+  private async manageFilled(
+    stocks: StockState[],
+    positions: AlpacaPosition[] | null,
+  ): Promise<void> {
+    const priceMap = this.buildPriceMap(stocks, positions);
     const exec = config.execution;
 
     for (const trade of [...this.activeTrades]) {

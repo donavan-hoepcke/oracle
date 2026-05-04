@@ -242,6 +242,27 @@ describe('ExecutionService', () => {
       expect(trade?.trailingState).toBe('breakeven');
     });
 
+    it('falls back to broker position price when symbol drops off the Oracle watchlist', async () => {
+      // Adopted positions can outlive their Oracle listing. Without the broker-
+      // price fallback, manageFilled never sees a tick and the trailing stop
+      // stays frozen at the initial value.
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Oracle drops AGAE; broker still reports the position at 0.55 (1R).
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'AGAE', qty: 100, avgEntryPrice: 0.50, currentPrice: 0.55, marketValue: 55, unrealizedPl: 5 },
+      ]);
+      await service.onPriceCycle([], []);
+
+      const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
+      expect(trade?.currentStop).toBeCloseTo(0.525, 3);
+      expect(trade?.trailingState).toBe('breakeven');
+    });
+
     it('trails at 1R behind after 2R', async () => {
       // Risk=10% (entry 0.50, stop 0.45) to stay within the max_risk_pct clamp
       const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
