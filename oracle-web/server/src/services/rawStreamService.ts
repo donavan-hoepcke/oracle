@@ -107,6 +107,13 @@ export class RawStreamService {
   private buffer: RawStreamEvent[] = [];
   private bufferSize: number;
   private unsubscribeFns: Array<() => void> = [];
+  // Dedup keys for moderator alerts. moderatorAlertService re-scrapes the
+  // DMP page every poll cycle and emits ALL posts each time; without this
+  // set, every post is republished as a fresh mod_alert event on every
+  // cycle, which spams downstream consumers (~25x duplicate evaluations).
+  // Keyed by `${postedAt}|${title}` since posts have no stable id from
+  // the upstream page. Cleared by reset() for tests.
+  private seenModAlertKeys = new Set<string>();
 
   constructor(opts: RawStreamServiceOptions = {}) {
     this.bufferSize = opts.bufferSize ?? 1000;
@@ -147,6 +154,12 @@ export class RawStreamService {
   bindModeratorAlertService(svc: AlertsHookSource): void {
     const off = svc.onAlerts((posts) => {
       for (const post of posts) {
+        const p = (post ?? {}) as { postedAt?: unknown; title?: unknown };
+        const postedAt = typeof p.postedAt === 'string' ? p.postedAt : '';
+        const title = typeof p.title === 'string' ? p.title : '';
+        const key = `${postedAt}|${title}`;
+        if (this.seenModAlertKeys.has(key)) continue;
+        this.seenModAlertKeys.add(key);
         this.publish({ type: 'mod_alert', payload: shapeModAlertForBot(post) });
       }
     });
@@ -180,6 +193,7 @@ export class RawStreamService {
     this.unbindAll();
     this.buffer = [];
     this.nextId = 1;
+    this.seenModAlertKeys.clear();
     this.emitter.removeAllListeners(EVENT_NAME);
   }
 }
