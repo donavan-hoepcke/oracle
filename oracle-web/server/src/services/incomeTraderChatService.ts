@@ -1,0 +1,363 @@
+import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { config } from '../config.js';
+import { messageService } from './messageService.js';
+
+export type TickerSection = 'moderator_pick' | 'community_mention';
+
+export interface IncomeTraderTicker {
+  symbol: string;
+  changePct: number | null;
+  price: number | null;
+  section: TickerSection;
+}
+
+export interface IncomeTraderChatMessage {
+  author: string;
+  postedAt: string;
+  body: string;
+}
+
+export interface IncomeTraderSnapshot {
+  fetchedAt: string | null;
+  moderatorPicks: IncomeTraderTicker[];
+  communityMentions: IncomeTraderTicker[];
+  error: string | null;
+}
+
+const SECTION_HEADER_PICKS = /^\s*moderator\s+picks\s*$/i;
+const SECTION_HEADER_MENTIONS = /^\s*community\s+mentions\s*$/i;
+const SECTION_ANCHOR = /^\s*today'?s\s+tickers\s*$/i;
+// "May 4 11:14 AM" or "May 4, 2026 8:43 AM" — chat timestamps inside the
+// transcript. We anchor message blocks on these lines.
+const CHAT_TIMESTAMP_RE =
+  /^\s*([A-Z][a-z]{2})\s+(\d{1,2})(?:,\s+(\d{4}))?\s+(\d{1,2}):(\d{2})\s+(AM|PM)\s*$/i;
+// Tickers may or may not be prefixed with "$"; we accept both. Length is
+// capped to 6 chars + optional class suffix to reject narrative noise.
+const TICKER_RE = /^\$?([A-Z][A-Z0-9.-]{0,6})$/;
+const PCT_RE = /^[▲▼\-+]?\s*([\d.]+)\s*%$/;
+const PRICE_RE = /^\$([\d,]*\.?[\d]+)$/;
+
+function parseNumber(raw: string | undefined | null): number | null {
+  if (!raw) return null;
+  const n = Number(raw.replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Parse the right-rail "Today's Tickers" panel as it appears in the chat
+ * page's innerText. The rail collapses each row's symbol / change% / price
+ * onto adjacent lines, so we walk forward in 3-line groups within each
+ * section and tolerate stray blank lines.
+ */
+export function parseIncomeTraderTickers(rawText: string): {
+  moderatorPicks: IncomeTraderTicker[];
+  communityMentions: IncomeTraderTicker[];
+} {
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  // Find the "Today's Tickers" anchor and walk forward; otherwise skip the
+  // chat transcript above so cashtags in messages don't leak into picks.
+  let i = lines.findIndex((l) => SECTION_ANCHOR.test(l));
+  if (i < 0) return { moderatorPicks: [], communityMentions: [] };
+
+  let current: TickerSection | null = null;
+  const moderatorPicks: IncomeTraderTicker[] = [];
+  const communityMentions: IncomeTraderTicker[] = [];
+  const seenInScrape = new Set<string>();
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (SECTION_HEADER_PICKS.test(line)) {
+      current = 'moderator_pick';
+      i++;
+      continue;
+    }
+    if (SECTION_HEADER_MENTIONS.test(line)) {
+      current = 'community_mention';
+      i++;
+      continue;
+    }
+
+    const tickerMatch = line.match(TICKER_RE);
+    if (current && tickerMatch) {
+      const symbol = tickerMatch[1].toUpperCase();
+      const changeRaw = lines[i + 1]?.match(PCT_RE);
+      const priceRaw = lines[i + 2]?.match(PRICE_RE);
+      // Direction for change% is encoded in arrows we don't preserve in
+      // innerText reliably. The chat shows green for up, red for down, but
+      // text-only loses that — so we keep the magnitude only. Bot consumers
+      // can look up direction from /api/scanner if needed.
+      const changePct = changeRaw ? parseNumber(changeRaw[1]) : null;
+      const price = priceRaw ? parseNumber(priceRaw[1]) : null;
+
+      // Require at least price OR changePct to consider this a real row;
+      // the rail occasionally has standalone tokens between sections that
+      // would otherwise create empty entries.
+      if (changePct !== null || price !== null) {
+        const dedupeKey = `${current}:${symbol}`;
+        if (!seenInScrape.has(dedupeKey)) {
+          seenInScrape.add(dedupeKey);
+          const row: IncomeTraderTicker = { symbol, changePct, price, section: current };
+          if (current === 'moderator_pick') moderatorPicks.push(row);
+          else communityMentions.push(row);
+        }
+        i += 3;
+        continue;
+      }
+    }
+    i++;
+  }
+
+  return { moderatorPicks, communityMentions };
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+function parseChatTimestamp(match: RegExpMatchArray, now: Date = new Date()): string {
+  const [, monStr, dayStr, yearStr, hourStr, minStr, ampm] = match;
+  const month = MONTHS[monStr.toLowerCase()] ?? 0;
+  const day = parseInt(dayStr, 10);
+  const year = yearStr ? parseInt(yearStr, 10) : now.getFullYear();
+  let hour = parseInt(hourStr, 10) % 12;
+  if (ampm.toUpperCase() === 'PM') hour += 12;
+  const minute = parseInt(minStr, 10);
+  // Local-time timestamps from the page; treat as ET (the room's timezone).
+  // We render as ISO without TZ shift; bot consumers can re-zone if needed.
+  return new Date(Date.UTC(year, month, day, hour, minute)).toISOString();
+}
+
+/**
+ * Parse the chat transcript out of the page's innerText. We anchor on chat
+ * timestamp lines: the line immediately above is the author, and the lines
+ * between this timestamp and the next are the message body. Stops at the
+ * "Today's Tickers" rail anchor so right-rail content can't masquerade as
+ * a chat message.
+ */
+export function parseIncomeTraderChat(rawText: string): IncomeTraderChatMessage[] {
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim());
+
+  // Cap parsing at the rail anchor so the right-side panel doesn't bleed in.
+  const railIdx = lines.findIndex((l) => SECTION_ANCHOR.test(l));
+  const upper = railIdx >= 0 ? railIdx : lines.length;
+
+  const messages: IncomeTraderChatMessage[] = [];
+  const tsIndices: number[] = [];
+  for (let i = 0; i < upper; i++) {
+    if (CHAT_TIMESTAMP_RE.test(lines[i])) tsIndices.push(i);
+  }
+
+  for (let k = 0; k < tsIndices.length; k++) {
+    const ts = tsIndices[k];
+    const next = k + 1 < tsIndices.length ? tsIndices[k + 1] : upper;
+
+    // Author is the nearest non-empty line above the timestamp. Skip blank
+    // separator lines and lines that look like another timestamp / cashtag.
+    let authorIdx = ts - 1;
+    while (authorIdx > 0 && lines[authorIdx] === '') authorIdx--;
+    if (authorIdx < 0) continue;
+    const author = lines[authorIdx];
+    if (!author || CHAT_TIMESTAMP_RE.test(author)) continue;
+
+    // Body starts after the timestamp; ends at the line BEFORE the next
+    // message's author (which is the line before the next timestamp).
+    const bodyEnd = k + 1 < tsIndices.length ? tsIndices[k + 1] - 1 : next;
+    const bodyLines: string[] = [];
+    for (let i = ts + 1; i < bodyEnd; i++) {
+      if (lines[i] !== '') bodyLines.push(lines[i]);
+    }
+    if (bodyLines.length === 0) continue;
+
+    const tsMatch = lines[ts].match(CHAT_TIMESTAMP_RE);
+    if (!tsMatch) continue;
+
+    messages.push({
+      author,
+      postedAt: parseChatTimestamp(tsMatch),
+      body: bodyLines.join('\n'),
+    });
+  }
+
+  return messages;
+}
+
+function chatMessageHash(m: IncomeTraderChatMessage): string {
+  return createHash('sha1')
+    .update(`${m.author}|${m.postedAt}|${m.body}`)
+    .digest('hex');
+}
+
+class IncomeTraderChatService {
+  private snapshot: IncomeTraderSnapshot = {
+    fetchedAt: null,
+    moderatorPicks: [],
+    communityMentions: [],
+    error: null,
+  };
+  private pollTimer: NodeJS.Timeout | null = null;
+  private inFlight = false;
+  private emitter = new EventEmitter();
+  // Tickers we've already pushed into messageService this session. Keyed by
+  // section + symbol so a community mention promoted to a moderator pick
+  // re-fires (semantic upgrade), but plain re-observation does not flood.
+  private ingestedKeys = new Set<string>();
+  // SHA-1 of (author|postedAt|body) for chat messages already re-emitted.
+  // The chat transcript is a sliding window so most polls revisit the same
+  // tail — without dedup we'd flood messageService.
+  private ingestedChatHashes = new Set<string>();
+  private readonly chatHashCap = 5_000;
+
+  constructor() {
+    this.emitter.setMaxListeners(0);
+  }
+
+  getSnapshot(): IncomeTraderSnapshot {
+    return this.snapshot;
+  }
+
+  /** Test seam — push a parsed snapshot directly without touching Playwright. */
+  ingestSnapshot(picks: IncomeTraderTicker[], mentions: IncomeTraderTicker[]): void {
+    this.applyParsed(picks, mentions);
+  }
+
+  /** Test seam — push a parsed chat batch directly. */
+  ingestChat(messages: IncomeTraderChatMessage[]): void {
+    this.applyChat(messages);
+  }
+
+  onUpdate(listener: (snap: IncomeTraderSnapshot) => void): () => void {
+    this.emitter.on('update', listener);
+    return () => this.emitter.off('update', listener);
+  }
+
+  async start(): Promise<void> {
+    if (!config.bot.incomeTraderChat.enabled) return;
+    if (this.pollTimer) return;
+    const intervalMs = config.bot.incomeTraderChat.poll_interval_sec * 1000;
+    this.pollOnce().catch((err) => {
+      console.warn(
+        'income-trader-chat initial poll failed:',
+        err instanceof Error ? err.message : err,
+      );
+    });
+    this.pollTimer = setInterval(() => {
+      this.pollOnce().catch((err) => {
+        console.warn(
+          'income-trader-chat poll failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }, intervalMs);
+  }
+
+  async stop(): Promise<void> {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  private async pollOnce(): Promise<void> {
+    if (this.inFlight) return;
+    this.inFlight = true;
+    try {
+      const text = await this.fetchPageText();
+      const { moderatorPicks, communityMentions } = parseIncomeTraderTickers(text);
+      this.applyParsed(moderatorPicks, communityMentions);
+      const chatMessages = parseIncomeTraderChat(text);
+      this.applyChat(chatMessages);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.snapshot = { ...this.snapshot, error: msg };
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async fetchPageText(): Promise<string> {
+    const { chromium } = await import('playwright');
+    const cfg = config.bot.incomeTraderChat;
+    const browser = await chromium.connectOverCDP(config.bot.playwright.chrome_cdp_url);
+    try {
+      const contexts = browser.contexts();
+      if (contexts.length === 0) throw new Error('no Chrome contexts attached');
+      const context = contexts[0];
+      const existing = context.pages().find((p) => p.url().includes(cfg.url));
+      const page = existing ?? (await context.newPage());
+      if (!existing) {
+        await page.goto(cfg.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        await page.waitForTimeout(cfg.hydration_wait_ms);
+      }
+      return (await page.evaluate(
+        `((document.body && document.body.innerText) || '')`,
+      )) as string;
+    } finally {
+      await browser.close();
+    }
+  }
+
+  private applyParsed(
+    moderatorPicks: IncomeTraderTicker[],
+    communityMentions: IncomeTraderTicker[],
+  ): void {
+    this.snapshot = {
+      fetchedAt: new Date().toISOString(),
+      moderatorPicks,
+      communityMentions,
+      error: null,
+    };
+
+    for (const t of moderatorPicks) this.maybeIngest(t);
+    for (const t of communityMentions) this.maybeIngest(t);
+
+    this.emitter.emit('update', this.snapshot);
+  }
+
+  private maybeIngest(t: IncomeTraderTicker): void {
+    const key = `${t.section}:${t.symbol}`;
+    if (this.ingestedKeys.has(key)) return;
+    this.ingestedKeys.add(key);
+
+    const author = t.section === 'moderator_pick' ? 'moderator_picks' : 'community_mentions';
+    const priceText = t.price !== null ? ` $${t.price.toFixed(2)}` : '';
+    const pctText = t.changePct !== null ? ` ${t.changePct.toFixed(2)}%` : '';
+    messageService.ingest({
+      text: `$${t.symbol}${pctText}${priceText}`,
+      channel: 'income_trader_chat',
+      author,
+    });
+  }
+
+  private applyChat(messages: IncomeTraderChatMessage[]): void {
+    for (const m of messages) {
+      const hash = chatMessageHash(m);
+      if (this.ingestedChatHashes.has(hash)) continue;
+      this.ingestedChatHashes.add(hash);
+      messageService.ingest({
+        text: m.body,
+        channel: 'income_trader_chat',
+        author: m.author,
+        timestamp: m.postedAt,
+      });
+    }
+    // Bound the dedupe set so it doesn't grow without limit across a long
+    // session. The chat tail at any moment is well under this cap, so
+    // dropping the oldest entries is safe.
+    if (this.ingestedChatHashes.size > this.chatHashCap) {
+      const overflow = this.ingestedChatHashes.size - this.chatHashCap;
+      const it = this.ingestedChatHashes.values();
+      for (let i = 0; i < overflow; i++) {
+        const v = it.next().value;
+        if (v) this.ingestedChatHashes.delete(v);
+      }
+    }
+  }
+}
+
+export const incomeTraderChatService = new IncomeTraderChatService();
