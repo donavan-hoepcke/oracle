@@ -72,6 +72,19 @@ function trailingBadge(s: ActiveTrade['trailingState']): string {
   }
 }
 
+function trailingLabel(t: ActiveTrade): string {
+  const lockedR =
+    t.riskPerShare > 0 ? (t.currentStop - t.entryPrice) / t.riskPerShare : 0;
+  const lockedSuffix =
+    lockedR > 0.01 ? ` +${lockedR.toFixed(1)}R` : lockedR < -0.01 ? ` ${lockedR.toFixed(1)}R` : '';
+  switch (t.trailingState) {
+    case 'initial': return 'Initial';
+    case 'mfe_lock': return `MFE Lock${lockedSuffix}`;
+    case 'breakeven': return 'Breakeven';
+    case 'trailing': return `Trailing${lockedSuffix}`;
+  }
+}
+
 function statusBadge(s: ActiveTrade['status']): string {
   switch (s) {
     case 'pending': return 'bg-yellow-100 text-yellow-800';
@@ -141,7 +154,7 @@ function ActiveTradesTable({ active }: { active: ActiveTrade[] }) {
                     </td>
                     <td className="px-3 py-2 text-center">
                       <span className={`text-xs px-2 py-0.5 rounded ${trailingBadge(t.trailingState)}`}>
-                        {t.trailingState}
+                        {trailingLabel(t)}
                       </span>
                     </td>
                     <td className="px-3 py-2 text-center">

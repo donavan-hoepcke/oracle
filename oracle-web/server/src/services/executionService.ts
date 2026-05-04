@@ -625,7 +625,7 @@ export class ExecutionService {
         const mfeStop = trade.entryPrice + lockedR * trade.riskPerShare;
         if (mfeStop > trade.currentStop) {
           trade.currentStop = mfeStop;
-          if (trade.trailingState === 'initial') trade.trailingState = 'mfe_lock';
+          if (trade.trailingState !== 'trailing') trade.trailingState = 'mfe_lock';
         }
       }
 
@@ -635,7 +635,13 @@ export class ExecutionService {
         trade.trailingState = 'trailing';
       } else if (rMultiple >= exec.trailing_breakeven_r) {
         trade.currentStop = Math.max(trade.currentStop, trade.entryPrice);
-        if (trade.trailingState !== 'trailing') trade.trailingState = 'breakeven';
+        // Only adopt the 'breakeven' label if the entry-price stop is actually
+        // the binding level. If MFE has already pulled the stop above entry,
+        // keep the 'mfe_lock' marker so the UI accurately reflects the locked
+        // gain rather than implying the trade is back to flat.
+        if (trade.trailingState !== 'trailing' && trade.currentStop <= trade.entryPrice) {
+          trade.trailingState = 'breakeven';
+        }
       }
     }
   }
