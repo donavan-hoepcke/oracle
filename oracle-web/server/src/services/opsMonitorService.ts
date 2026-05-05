@@ -11,6 +11,11 @@ import type { RecoveryRegistry } from './opsRecovery.js';
 
 export type ProbeFn = () => Promise<ProbeResult>;
 
+const DEFAULT_COOLDOWN_MS = 5 * 60_000;
+const DEFAULT_NEEDS_HUMAN_THRESHOLD = 3;
+const DEFAULT_INTERVAL_MS = 30_000;
+const DEFAULT_HISTORY_CAP = 200;
+
 export interface OpsMonitorOptions {
   probes: Partial<Record<ProbeName, ProbeFn>>;
   recovery: RecoveryRegistry;
@@ -39,10 +44,10 @@ export class OpsMonitorService {
   constructor(opts: OpsMonitorOptions) {
     this.probes = opts.probes;
     this.recovery = opts.recovery;
-    this.cooldownMs = opts.cooldownMs ?? 5 * 60_000;
-    this.needsHumanThreshold = opts.needsHumanThreshold ?? 3;
-    this.intervalMs = opts.intervalMs ?? 30_000;
-    this.historyCap = opts.historyCap ?? 200;
+    this.cooldownMs = opts.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+    this.needsHumanThreshold = opts.needsHumanThreshold ?? DEFAULT_NEEDS_HUMAN_THRESHOLD;
+    this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
+    this.historyCap = opts.historyCap ?? DEFAULT_HISTORY_CAP;
     this.emitter.setMaxListeners(0);
   }
 
@@ -105,6 +110,13 @@ export class OpsMonitorService {
     return out;
   }
 
+  /** Convenience accessor for active probes (e.g. broker_account) that need
+   *  to consult only their own counter when deciding warn-vs-red. Avoids
+   *  exposing the whole counters map to a probe that only cares about itself. */
+  getFailureCount(name: ProbeName): number {
+    return this.states.get(name)?.consecutiveFailures ?? 0;
+  }
+
   onUpdate(listener: (snap: OpsHealthSnapshot) => void): () => void {
     this.emitter.on('update', listener);
     return () => this.emitter.off('update', listener);
@@ -117,6 +129,7 @@ export class OpsMonitorService {
       for (let i = 0; i < entries.length; i++) {
         const [name] = entries[i];
         const r = results[i];
+        const prev = this.states.get(name);
         const result: ProbeResult =
           r.status === 'fulfilled'
             ? r.value
@@ -124,11 +137,11 @@ export class OpsMonitorService {
                 name,
                 status: 'red',
                 lastProbeAt: new Date().toISOString(),
-                lastOkAt: this.states.get(name)?.lastOkAt ?? null,
+                lastOkAt: prev?.lastOkAt ?? null,
                 message: r.reason instanceof Error ? r.reason.message : String(r.reason),
                 attemptedRecovery: false,
                 recoveredAt: null,
-                consecutiveFailures: 0,
+                consecutiveFailures: prev?.consecutiveFailures ?? 0,
               };
         this.applyResult(name, result);
       }
@@ -186,7 +199,8 @@ export class OpsMonitorService {
     try {
       await action();
     } catch (err) {
-      state.message = `${state.message} (recovery threw: ${err instanceof Error ? err.message : String(err)})`;
+      // Replace (not append) so the message can't grow unboundedly across repeated cooldown-elapsed retries before the next probe pass overwrites it.
+      state.message = `recovery threw: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 }

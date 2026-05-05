@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { OpsMonitorService } from '../services/opsMonitorService.js';
 import type { ProbeName, ProbeResult } from '../types/opsHealth.js';
 
@@ -16,9 +16,6 @@ function makeProbe(name: ProbeName, status: ProbeResult['status'], message = '')
 }
 
 describe('OpsMonitorService', () => {
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
-
   it('tick aggregates results from every probe in the map', async () => {
     const monitor = new OpsMonitorService({
       probes: {
@@ -79,7 +76,7 @@ describe('OpsMonitorService', () => {
     expect(monitor.getSnapshot().probes[0].status).toBe('needs_human');
     monitor.reset();
     await monitor.tickForTest();
-    expect(monitor.getSnapshot().probes[0].status).not.toBe('needs_human');
+    expect(monitor.getSnapshot().probes[0].status).toBe('red');
   });
 
   it('a probe that throws does not break others', async () => {
@@ -124,5 +121,54 @@ describe('OpsMonitorService', () => {
     await monitor.tickForTest(); // status changed → diff entry
     const history = monitor.getHistory('oracle_scraper');
     expect(history.length).toBe(2); // initial ok + the flip to red
+  });
+
+  it('history ring caps at historyCap, dropping oldest entries first', async () => {
+    // Build a probe that flips status every call so each tick produces a
+    // new history entry, then advance enough ticks to overflow the cap.
+    let flips = 0;
+    const monitor = new OpsMonitorService({
+      probes: {
+        oracle_scraper: async () => {
+          flips++;
+          return {
+            name: 'oracle_scraper',
+            status: flips % 2 === 0 ? 'ok' : 'red',
+            lastProbeAt: new Date(Date.now() + flips).toISOString(),
+            lastOkAt: null,
+            message: `flip ${flips}`,
+            attemptedRecovery: false,
+            recoveredAt: null,
+            consecutiveFailures: 0,
+          };
+        },
+      },
+      recovery: {},
+      historyCap: 5,
+      cooldownMs: 0,
+    });
+    for (let i = 0; i < 12; i++) await monitor.tickForTest();
+    const history = monitor.getHistory('oracle_scraper');
+    expect(history.length).toBeLessThanOrEqual(5);
+    // Oldest dropped — earliest remaining entry is from a later tick than the very first.
+    expect(history[0].message).not.toBe('flip 1');
+  });
+
+  it('populates recoveredAt when recovery succeeds and probe goes ok next tick', async () => {
+    const probeStates: Array<ReturnType<typeof makeProbe>> = [
+      makeProbe('oracle_scraper', 'red', 'stale'),
+      makeProbe('oracle_scraper', 'ok', 'recovered'),
+    ];
+    let call = 0;
+    const monitor = new OpsMonitorService({
+      probes: { oracle_scraper: () => probeStates[Math.min(call++, 1)]() },
+      recovery: { oracle_scraper: async () => {} },
+      cooldownMs: 0,
+    });
+    await monitor.tickForTest(); // red, recovery runs, attemptedRecovery=true
+    await monitor.tickForTest(); // ok, recoveredAt should populate
+    const probe = monitor.getSnapshot().probes.find((p) => p.name === 'oracle_scraper');
+    expect(probe?.status).toBe('ok');
+    expect(probe?.recoveredAt).not.toBeNull();
   });
 });
