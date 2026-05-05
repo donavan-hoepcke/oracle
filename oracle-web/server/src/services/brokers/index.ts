@@ -7,17 +7,27 @@ function createBrokerAdapter(): BrokerAdapter {
   switch (config.broker.active) {
     case 'alpaca':
       return new AlpacaAdapter();
-    case 'ibkr':
+    case 'ibkr': {
+      const ibkr = config.broker.ibkr;
+      const profileName = ibkr.profile;
+      const profile = ibkr.profiles[profileName];
+      // Conid caches must not collide between paper and live — symbol→conid
+      // mappings differ across IBKR's paper and live universes for newly
+      // listed tickers, and a stale paper conid pointed at a live order is
+      // a real-money bug. Replace the {profile} placeholder so each profile
+      // gets its own file.
+      const conidCachePath = ibkr.conid_cache_path.replace('{profile}', profileName);
       return new IbkrAdapter({
         config: {
-          baseUrl: config.broker.ibkr.base_url,
-          accountId: config.broker.ibkr.account_id,
-          cashAccount: config.broker.ibkr.cash_account,
-          allowSelfSignedTls: config.broker.ibkr.allow_self_signed_tls,
-          pollSessionKeepaliveSec: config.broker.ibkr.poll_session_keepalive_sec,
-          conidCachePath: config.broker.ibkr.conid_cache_path,
+          baseUrl: profile.base_url,
+          accountId: profile.account_id,
+          cashAccount: profile.cash_account,
+          allowSelfSignedTls: ibkr.allow_self_signed_tls,
+          pollSessionKeepaliveSec: ibkr.poll_session_keepalive_sec,
+          conidCachePath,
         },
       });
+    }
     default: {
       // Exhaustiveness guard — narrows config.broker.active to never.
       const exhaustive: never = config.broker.active;

@@ -204,22 +204,42 @@ const configSchema = z.object({
         .default({}),
       ibkr: z
         .object({
-          /** Base URL of the local Client Portal Gateway. Default matches
-           *  IBKR's documented localhost-listening port for the gateway. */
-          base_url: z.string().default('https://localhost:5000/v1/api'),
-          /** IBKR account ID, e.g. "DU1234567" (paper) or "U1234567" (live).
-           *  Read from APCA_AI_KEY_ID-style env var rather than committed
-           *  config — left empty here so misconfiguration is loud. */
-          account_id: z.string().default(''),
-          /** Cash vs margin. Set true for a real cash account so settled-cash
-           *  sizing kicks in (Phase 3). */
-          cash_account: z.boolean().default(true),
+          /** Which gateway profile to use. Each profile points at a separate
+           *  Client Portal Gateway running on its own port and authenticated
+           *  against its own IBKR account (paper accounts are DU..., live
+           *  accounts are U...). Switching paper ↔ live is a config flip +
+           *  backend restart — both gateways can run concurrently on
+           *  different ports without interfering. */
+          profile: z.enum(['paper', 'live']).default('paper'),
+          profiles: z
+            .object({
+              paper: z
+                .object({
+                  base_url: z.string().default('https://localhost:5000/v1/api'),
+                  /** IBKR paper account ID, e.g. "DU1234567". Left empty so
+                   *  misconfiguration is loud rather than silent. */
+                  account_id: z.string().default(''),
+                  /** Cash vs margin. Paper sims margin by default at IBKR. */
+                  cash_account: z.boolean().default(true),
+                })
+                .default({}),
+              live: z
+                .object({
+                  base_url: z.string().default('https://localhost:5001/v1/api'),
+                  account_id: z.string().default(''),
+                  cash_account: z.boolean().default(true),
+                })
+                .default({}),
+            })
+            .default({}),
           /** Tickle interval. The gateway tears the session down after
-           *  ~1 minute of silence. */
+           *  ~1 minute of silence. Shared across profiles since both
+           *  gateways behave the same. */
           poll_session_keepalive_sec: z.number().positive().default(60),
-          /** Where to persist the symbol → conid cache. Lazy-resolved on
-           *  first lookup; survives process restarts. */
-          conid_cache_path: z.string().default('.ibkr-state/conid-cache.json'),
+          /** Where to persist the symbol → conid cache. Per-profile so
+           *  paper and live caches don't collide; the literal string
+           *  "{profile}" is replaced at adapter-construction time. */
+          conid_cache_path: z.string().default('.ibkr-state/conid-cache-{profile}.json'),
           /** When the gateway uses self-signed TLS (the default for local
            *  installs), Node's built-in fetch (undici) refuses to connect.
            *  Setting this true installs a permissive Agent dispatcher; use

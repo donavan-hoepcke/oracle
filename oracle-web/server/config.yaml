@@ -127,6 +127,27 @@ broker:
   active: "alpaca"
   alpaca:
     cash_account: false
+  ibkr:
+    # Selects which gateway profile to use when broker.active is "ibkr".
+    # Both gateways can run concurrently on different ports; flip "profile"
+    # and restart the backend to switch.
+    profile: "paper"
+    poll_session_keepalive_sec: 60
+    conid_cache_path: ".ibkr-state/conid-cache-{profile}.json"
+    allow_self_signed_tls: true
+    profiles:
+      paper:
+        base_url: "https://localhost:5000/v1/api"
+        # Paper account ID, e.g. "DU1234567". Empty until you provision the
+        # paper gateway.
+        account_id: ""
+        cash_account: true
+      live:
+        base_url: "https://localhost:5001/v1/api"
+        # Live account ID, e.g. "U1234567". Leave empty until live trading
+        # is intentionally enabled.
+        account_id: ""
+        cash_account: true
 recording:
   enabled: true
   dir: "F:/oracle_data/recordings"

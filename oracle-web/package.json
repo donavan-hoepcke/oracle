@@ -10,8 +10,11 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ibkr-gateway:install": "node scripts/install-ibkr-gateway.mjs",
-    "ibkr-gateway:reinstall": "node scripts/install-ibkr-gateway.mjs --force"
+    "ibkr-gateway:install": "node scripts/install-ibkr-gateway.mjs --profile=paper",
+    "ibkr-gateway:install:paper": "node scripts/install-ibkr-gateway.mjs --profile=paper",
+    "ibkr-gateway:install:live": "node scripts/install-ibkr-gateway.mjs --profile=live",
+    "ibkr-gateway:reinstall:paper": "node scripts/install-ibkr-gateway.mjs --profile=paper --force",
+    "ibkr-gateway:reinstall:live": "node scripts/install-ibkr-gateway.mjs --profile=live --force"
   },
   "dependencies": {
     "react": "^18.3.1",

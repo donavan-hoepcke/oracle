@@ -9,21 +9,28 @@
  * machine; the project stays self-contained from a "clone-and-go"
  * perspective without republishing IBKR's binaries.
  *
- * Usage (from oracle-web/):
- *   node scripts/install-ibkr-gateway.mjs
- *   # or via npm:
- *   npm run ibkr-gateway:install
+ * Profiles: paper and live IBKR accounts get separate gateway installs
+ * (different ports, different cookie jars) so they can run concurrently.
+ * The --profile flag picks which profile's directory and port to set up.
  *
- * Idempotent — safe to re-run. If the gateway is already installed the
+ * Usage (from oracle-web/):
+ *   node scripts/install-ibkr-gateway.mjs --profile=paper   # port 5000
+ *   node scripts/install-ibkr-gateway.mjs --profile=live    # port 5001
+ *   # or via npm:
+ *   npm run ibkr-gateway:install:paper
+ *   npm run ibkr-gateway:install:live
+ *
+ * Idempotent — safe to re-run. If the profile is already installed the
  * script skips the download. Pass --force to redownload regardless.
  *
  * Environment overrides:
  *   IBKR_GATEWAY_URL — alternate download URL (e.g. for an internal mirror)
- *   IBKR_GATEWAY_DIR — alternate install location (default: vendor/ibkr-gateway)
+ *   IBKR_GATEWAY_DIR — alternate install location (default:
+ *                      vendor/ibkr-gateway-{profile})
  */
 
 import { createWriteStream } from 'node:fs';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -33,11 +40,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(__dirname, '..');
 
 const DEFAULT_URL = 'https://download2.interactivebrokers.com/portal/clientportal.gw.zip';
-const DEFAULT_DIR = join(REPO_DIR, 'vendor', 'ibkr-gateway');
 
-const args = new Set(process.argv.slice(2));
-const force = args.has('--force');
+// One port per profile. These match the defaults in
+// `config.broker.ibkr.profiles.{paper,live}.base_url`. If you change them
+// here, change them in config.yaml too — the adapter has no way to learn
+// the gateway's port at runtime.
+const PROFILE_PORTS = { paper: 5000, live: 5001 };
 
+const argv = process.argv.slice(2);
+const flags = new Set(argv.filter((a) => !a.includes('=')));
+const kvs = Object.fromEntries(
+  argv.filter((a) => a.includes('=')).map((a) => a.replace(/^--/, '').split('=')),
+);
+const force = flags.has('--force');
+const profile = kvs.profile ?? 'paper';
+if (!Object.prototype.hasOwnProperty.call(PROFILE_PORTS, profile)) {
+  console.error(`Unknown --profile=${profile}. Allowed: ${Object.keys(PROFILE_PORTS).join(', ')}`);
+  process.exit(2);
+}
+const port = PROFILE_PORTS[profile];
+
+const DEFAULT_DIR = join(REPO_DIR, 'vendor', `ibkr-gateway-${profile}`);
 const downloadUrl = process.env.IBKR_GATEWAY_URL ?? DEFAULT_URL;
 const installDir = process.env.IBKR_GATEWAY_DIR ?? DEFAULT_DIR;
 
@@ -138,12 +161,35 @@ async function unzipTo(zipPath, dest) {
   console.log(`✓ extracted`);
 }
 
+/**
+ * Patch the gateway's bundled `root/conf.yaml` so its listenPort matches
+ * the profile. The default zip ships with `listenPort: 5000` for both
+ * profiles; without this patch, paper and live would fight over 5000.
+ */
+async function patchListenPort() {
+  const confPath = join(installDir, 'root', 'conf.yaml');
+  const original = await readFile(confPath, 'utf-8');
+  // The conf.yaml we ship from IBKR has a single `listenPort: 5000` line.
+  // Replace it line-anchored so we don't accidentally rewrite a comment or
+  // a similar substring elsewhere in the file.
+  const patched = original.replace(/^(\s*listenPort:\s*)\d+\s*$/m, `$1${port}`);
+  if (patched === original) {
+    console.warn(
+      `! could not find a listenPort line to patch in ${confPath}; left untouched. ` +
+        `Edit it manually to "listenPort: ${port}" before starting the ${profile} gateway.`,
+    );
+    return;
+  }
+  await writeFile(confPath, patched, 'utf-8');
+  console.log(`✓ set listenPort=${port} in ${confPath}`);
+}
+
 async function writeReadme() {
   const readmePath = join(installDir, 'README.local.md');
-  const body = `# IBKR Client Portal Gateway (vendored locally)
+  const body = `# IBKR Client Portal Gateway — ${profile} (port ${port})
 
-This directory was populated by \`scripts/install-ibkr-gateway.mjs\`. The
-contents are IBKR's intellectual property; this directory is gitignored.
+This directory was populated by \`scripts/install-ibkr-gateway.mjs --profile=${profile}\`.
+The contents are IBKR's intellectual property; this directory is gitignored.
 
 To start the gateway:
 
@@ -157,22 +203,23 @@ ${join(installDir, 'bin', 'run.bat')} ${join(installDir, 'root', 'conf.yaml')}
 ${join(installDir, 'bin', 'run.sh')} ${join(installDir, 'root', 'conf.yaml')}
 \`\`\`
 
-Then authenticate at https://localhost:5000 in a browser.
+Then authenticate at https://localhost:${port} in a browser.
 
 See \`docs/ibkr-setup.md\` for the full operator runbook.
 
 To redownload (e.g. after IBKR ships an update), run:
 
 \`\`\`bash
-node scripts/install-ibkr-gateway.mjs --force
+node scripts/install-ibkr-gateway.mjs --profile=${profile} --force
 \`\`\`
 `;
   await writeFile(readmePath, body, 'utf-8');
 }
 
 async function main() {
+  console.log(`profile: ${profile} (port ${port})`);
   if (!force && (await alreadyInstalled())) {
-    console.log(`IBKR gateway already installed at ${installDir}`);
+    console.log(`IBKR ${profile} gateway already installed at ${installDir}`);
     console.log('  pass --force to redownload');
     return;
   }
@@ -181,13 +228,14 @@ async function main() {
     await rm(installDir, { recursive: true, force: true });
   }
 
-  const zipPath = join(tmpdir(), `clientportal.gw.${Date.now()}.zip`);
+  const zipPath = join(tmpdir(), `clientportal.gw.${profile}.${Date.now()}.zip`);
   try {
     await downloadTo(downloadUrl, zipPath);
     await unzipTo(zipPath, installDir);
+    await patchListenPort();
     await writeReadme();
     console.log('');
-    console.log('✓ IBKR gateway ready.');
+    console.log(`✓ IBKR ${profile} gateway ready (port ${port}).`);
     console.log(`  Install dir: ${installDir}`);
     console.log('  Next steps: see docs/ibkr-setup.md');
   } finally {
