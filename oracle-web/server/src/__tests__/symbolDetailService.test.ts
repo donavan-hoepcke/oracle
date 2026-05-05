@@ -172,6 +172,7 @@ describe('buildSymbolDetail', () => {
           body: '$LOCL\nSignal: $1.05\nRisk Zone: $0.95\nTarget: Mid to high $1s',
           signal: { symbol: 'LOCL', signal: 1.05, riskZone: 0.95, target: 'Mid to high $1s', targetFloor: 1 },
           backups: [],
+          symbols: [],
         },
         {
           title: 'Backup Ideas 4-21-2026',
@@ -184,6 +185,7 @@ describe('buildSymbolDetail', () => {
             { symbol: 'LOCL', price: 1.05, note: null },
             { symbol: 'ABCD', price: 2.0, note: null },
           ],
+          symbols: [],
         },
         {
           title: 'Pre Market Prep 4-21-2026',
@@ -193,6 +195,7 @@ describe('buildSymbolDetail', () => {
           body: 'We are watching $LOCL for a continuation setup today.',
           signal: null,
           backups: [],
+          symbols: [],
         },
       ],
     };

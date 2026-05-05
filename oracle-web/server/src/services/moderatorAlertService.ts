@@ -19,6 +19,7 @@ export interface ModeratorBackup {
 
 export type ModeratorPostKind =
   | 'alert'
+  | 'double_down'
   | 'backups'
   | 'pre_market_prep'
   | 'weekend_resources'
@@ -34,6 +35,15 @@ export interface ModeratorPost {
   body: string;
   signal: ModeratorSignal | null;
   backups: ModeratorBackup[];
+  // Every $TICKER mentioned anywhere in title or body (deduped, in order of
+  // first appearance). Distinct from `signal.symbol` (the post's *primary*
+  // actionable ticker, only set when a Signal:/Risk Zone:/Target: block is
+  // present) and from `backups` (structured backup-idea entries with prices).
+  // Useful for posts like Double Down notes where a ticker is mentioned but
+  // no fresh signal block exists — consumers can correlate by ticker without
+  // overloading the `signal` slot, which downstream code treats as
+  // "actionable primary signal" via `if (post.signal)` checks.
+  symbols: string[];
 }
 
 export interface ModeratorAlertSnapshot {
@@ -48,6 +58,9 @@ const SIGNAL_LINE_RE = /^Signal:\s*\$?([\d.]+)/i;
 const RISK_LINE_RE = /^Risk\s*Zone:.*?\$+([\d.]+)/i;
 const TARGET_LINE_RE = /^Target:\s*(.+)$/i;
 const TICKER_RE = /^\$([A-Z][A-Z0-9.-]{0,6})(?:\s|$)/;
+// Loose ticker scan for posts that don't follow the Signal/Risk/Target format
+// (e.g. Double Down notes). Matches a $TICKER anywhere on a line.
+const LOOSE_TICKER_RE = /\$([A-Z][A-Z0-9.-]{0,6})\b/;
 // Backup lines always price the ticker with a "$" prefix (e.g., "$TOVX $0.45"
 // or "$RMSG Double tap on $1.18"). Requiring the $ rejects narrative mentions
 // like "$EFOI to fast to alert, but plenty of time ... 30 minutes in advance".
@@ -56,10 +69,33 @@ const BACKUP_LINE_RE = /^\$([A-Z][A-Z0-9.-]{0,6})\s+(?:(.*?)\s+)?\$([\d.]+)(.*)?
 function classify(title: string): ModeratorPostKind {
   const t = title.toLowerCase();
   if (t.startsWith('daily market profits alert')) return 'alert';
+  // Double Down posts re-confirm an existing signal. Two formats observed in
+  // the room: "Double Down Alert 5-4-2026 $CLNN" (with ticker in title) and
+  // "Double Down Note 4-23-2026" (general note). Both classify as double_down
+  // so downstream consumers can match the bot's mod_double_down_long rule.
+  if (t.startsWith('double down') || t.startsWith('double-down')) return 'double_down';
   if (t.startsWith('backup ideas') || t.startsWith('backup idea')) return 'backups';
   if (t.startsWith('pre market prep') || t.startsWith('pre-market prep')) return 'pre_market_prep';
   if (t.startsWith('weekend resources')) return 'weekend_resources';
   return 'other';
+}
+
+function extractAllTickers(lines: string[]): string[] {
+  // De-dupe while preserving order of first appearance — readers care about
+  // "what tickers are mentioned in this post", not how many times each one is.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const globalRe = new RegExp(LOOSE_TICKER_RE.source, 'g');
+  for (const line of lines) {
+    for (const match of line.matchAll(globalRe)) {
+      const sym = match[1];
+      if (!seen.has(sym)) {
+        seen.add(sym);
+        out.push(sym);
+      }
+    }
+  }
+  return out;
 }
 
 function findTitleIndex(bodyLines: string[]): number {
@@ -109,15 +145,28 @@ function extractSignal(bodyLines: string[]): ModeratorSignal | null {
 
   if (signalIdx < 0) return null;
 
-  // Walk back from Signal: line to find the nearest $TICKER — that's the
-  // post's primary subject. Narrative mentions of other tickers earlier in the
-  // body are ignored by taking the closest preceding ticker.
+  // Walk back from Signal: line to find the nearest $TICKER on its own line
+  // — that's the post's primary subject. Narrative mentions of other tickers
+  // earlier in the body are ignored by taking the closest preceding ticker.
   let symbol: string | null = null;
   for (let j = signalIdx - 1; j >= 0; j--) {
     const m = bodyLines[j].match(TICKER_RE);
     if (m) {
       symbol = m[1];
       break;
+    }
+  }
+  // Fallback: some posts embed the ticker inline in a title like "Double Down
+  // Alert 5-4-2026 $CLNN" rather than on its own line. If TICKER_RE found
+  // nothing, scan the same backward range with a looser regex that matches
+  // a $TICKER anywhere on a line.
+  if (!symbol) {
+    for (let j = signalIdx - 1; j >= 0; j--) {
+      const m = bodyLines[j].match(LOOSE_TICKER_RE);
+      if (m) {
+        symbol = m[1];
+        break;
+      }
     }
   }
   if (!symbol) return null;
@@ -186,8 +235,22 @@ export function parseModeratorAlertText(raw: string): ModeratorPost[] {
     // "Signal: $X.XX / Risk Zone: $Y.YY / Target: ..." block. Restricting
     // extraction to kind==='alert' missed these. We always run the extractors;
     // they return null/empty when no Signal: line is present.
+    //
+    // For double_down posts specifically: the post usually re-confirms the
+    // *original* signal (so signal stays null and consumers look up the
+    // original alert by ticker). But moderators sometimes attach a fresh
+    // Signal: block when they identify a *new level to watch* — in that case
+    // extractSignal picks it up like any other post and `signal` is populated
+    // as a standalone actionable signal. The kind label `double_down` lets
+    // consumers tell the two apart from a regular `alert`.
     const signal = extractSignal(postLines);
     const backups = extractBackups(postLines);
+    // Loose ticker scan over title+body for any post kind. This is what
+    // surfaces the symbol on Double Down notes (which lack a Signal: block)
+    // without overloading the `signal` slot — `if (post.signal)` consumers
+    // (signalsService, symbolDetailService) keep treating only real signal
+    // blocks as primary actionable alerts.
+    const symbols = extractAllTickers(postLines);
 
     posts.push({
       title,
@@ -197,6 +260,7 @@ export function parseModeratorAlertText(raw: string): ModeratorPost[] {
       body: postLines.slice(1).join('\n'),
       signal,
       backups,
+      symbols,
     });
     cursor = tsIdx + 1;
   }
