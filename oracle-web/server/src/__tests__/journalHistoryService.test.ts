@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { AlpacaOrder } from '../services/alpacaOrderService.js';
+import type { BrokerOrder } from '../types/broker.js';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'oracle-journal-history-'));
 
@@ -17,8 +17,8 @@ const { mockConfig, getOrdersSinceMock } = vi.hoisted(() => ({
 mockConfig.recording.dir = tempDir;
 
 vi.mock('../config.js', () => ({ config: mockConfig }));
-vi.mock('../services/alpacaOrderService.js', () => ({
-  alpacaOrderService: { getOrdersSince: getOrdersSinceMock },
+vi.mock('../services/brokers/index.js', () => ({
+  brokerService: { getOrdersSince: getOrdersSinceMock },
 }));
 
 import { JournalHistoryService } from '../services/journalHistoryService.js';
@@ -109,7 +109,7 @@ describe('JournalHistoryService', () => {
       JSON.stringify(cycle('2026-04-16T20:00:00Z', day, [{ symbol: 'CCC', pnl: 0 }])) + '\n',
     );
 
-    const fill: AlpacaOrder = {
+    const fill: BrokerOrder = {
       id: 'order-1',
       symbol: 'CCC',
       status: 'filled',
@@ -125,7 +125,10 @@ describe('JournalHistoryService', () => {
     expect(result).not.toBeNull();
     expect(result!.closed[0].exitPrice).toBe(12);
     expect(result!.closed[0].pnl).toBe(2);
-    expect(result!.closed[0].exitDetail).toContain('Reconciled from Alpaca');
+    // Phase 1 broker-adapter rename: the message is now broker-neutral and
+    // includes the active adapter's `name`. Match the pattern rather than
+    // the literal so this test doesn't have to change again on Phase 2.
+    expect(result!.closed[0].exitDetail).toMatch(/Reconciled from \w+ fill/i);
     expect(result!.reconciled).toBe(true);
   });
 });

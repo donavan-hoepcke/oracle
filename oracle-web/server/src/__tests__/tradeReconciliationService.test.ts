@@ -9,8 +9,8 @@ const { mockConfig, getOrdersSinceMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../config.js', () => ({ config: mockConfig }));
-vi.mock('../services/alpacaOrderService.js', () => ({
-  alpacaOrderService: { getOrdersSince: getOrdersSinceMock },
+vi.mock('../services/brokers/index.js', () => ({
+  brokerService: { getOrdersSince: getOrdersSinceMock },
 }));
 
 import {
@@ -18,7 +18,7 @@ import {
   TradeReconciliationService,
 } from '../services/tradeReconciliationService.js';
 import type { TradeLedgerEntry } from '../services/executionService.js';
-import type { AlpacaOrder } from '../services/alpacaOrderService.js';
+import type { BrokerOrder } from '../types/broker.js';
 
 function trade(overrides: Partial<TradeLedgerEntry> = {}): TradeLedgerEntry {
   return {
@@ -40,7 +40,7 @@ function trade(overrides: Partial<TradeLedgerEntry> = {}): TradeLedgerEntry {
   };
 }
 
-function sellFill(overrides: Partial<AlpacaOrder> = {}): AlpacaOrder {
+function sellFill(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
   return {
     id: 'fill-1',
     symbol: 'AAA',
@@ -56,13 +56,18 @@ function sellFill(overrides: Partial<AlpacaOrder> = {}): AlpacaOrder {
 
 describe('applyFillsToLedger', () => {
   it('rewrites exitPrice/pnl/rMultiple from the matching sell fill', () => {
-    const { reconciled, changed } = applyFillsToLedger([trade()], [sellFill()]);
+    const { reconciled, changed } = applyFillsToLedger([trade()], [sellFill()], 'alpaca');
     expect(changed).toBe(1);
     expect(reconciled[0].exitPrice).toBe(11);
     expect(reconciled[0].pnl).toBe(100);
     expect(reconciled[0].pnlPct).toBeCloseTo(10);
     expect(reconciled[0].rMultiple).toBe(2);
-    expect(reconciled[0].exitDetail).toContain('reconciled from Alpaca fill');
+    expect(reconciled[0].exitDetail).toContain('reconciled from alpaca fill');
+  });
+
+  it('uses default broker name when omitted', () => {
+    const { reconciled } = applyFillsToLedger([trade()], [sellFill()]);
+    expect(reconciled[0].exitDetail).toContain('reconciled from broker fill');
   });
 
   it('ignores buy fills, unfilled orders, and symbol/qty mismatches', () => {
@@ -107,8 +112,9 @@ describe('applyFillsToLedger', () => {
     const { reconciled } = applyFillsToLedger(
       [trade({ exitDetail: 'Original note' })],
       [sellFill()],
+      'alpaca',
     );
-    expect(reconciled[0].exitDetail).toBe('Original note (reconciled from Alpaca fill)');
+    expect(reconciled[0].exitDetail).toBe('Original note (reconciled from alpaca fill)');
   });
 });
 

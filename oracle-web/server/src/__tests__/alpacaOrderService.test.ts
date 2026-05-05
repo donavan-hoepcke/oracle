@@ -6,18 +6,23 @@ vi.stubGlobal('fetch', mockFetch);
 
 // Mock config
 vi.mock('../config.js', () => ({
-  config: { execution: { paper: true } },
+  config: {
+    execution: { paper: true },
+    broker: { active: 'alpaca', alpaca: { cash_account: false } },
+  },
   alpacaApiKeyId: 'test-key',
   alpacaApiSecretKey: 'test-secret',
 }));
 
-import { alpacaOrderService } from '../services/alpacaOrderService.js';
+import { AlpacaAdapter } from '../services/brokers/alpacaAdapter.js';
+
+const alpacaOrderService = new AlpacaAdapter();
 
 beforeEach(() => {
   mockFetch.mockReset();
 });
 
-describe('AlpacaOrderService', () => {
+describe('AlpacaAdapter', () => {
   describe('getAccount', () => {
     it('fetches account from paper endpoint when paper mode', async () => {
       mockFetch.mockResolvedValueOnce({

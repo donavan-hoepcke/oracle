@@ -1,4 +1,12 @@
-import { config, alpacaApiKeyId, alpacaApiSecretKey } from '../config.js';
+import { config, alpacaApiKeyId, alpacaApiSecretKey } from '../../config.js';
+import type {
+  BrokerAccount,
+  BrokerAdapter,
+  BrokerOrder,
+  BrokerPosition,
+  OrderStatusFilter,
+  SubmitOrderParams,
+} from '../../types/broker.js';
 
 const PAPER_BASE = 'https://paper-api.alpaca.markets/v2';
 const LIVE_BASE = 'https://api.alpaca.markets/v2';
@@ -15,53 +23,37 @@ function headers(): Record<string, string> {
   };
 }
 
-export interface AlpacaAccount {
-  cash: number;
-  portfolioValue: number;
-  buyingPower: number;
-}
+export class AlpacaAdapter implements BrokerAdapter {
+  readonly name = 'alpaca' as const;
 
-export interface AlpacaPosition {
-  symbol: string;
-  qty: number;
-  avgEntryPrice: number;
-  currentPrice: number;
-  marketValue: number;
-  unrealizedPl: number;
-}
+  get isCashAccount(): boolean {
+    return config.broker.alpaca.cash_account;
+  }
 
-export interface AlpacaOrder {
-  id: string;
-  symbol: string;
-  status: string;
-  side: 'buy' | 'sell';
-  filledAvgPrice: number | null;
-  filledQty: number | null;
-  filledAt: string | null;
-  submittedAt: string | null;
-}
-
-export interface SubmitOrderParams {
-  symbol: string;
-  qty: number;
-  side: 'buy' | 'sell';
-  type: 'market' | 'limit';
-  limitPrice?: number;
-}
-
-class AlpacaOrderService {
-  async getAccount(): Promise<AlpacaAccount> {
+  async getAccount(): Promise<BrokerAccount> {
     const res = await fetch(`${baseUrl()}/account`, { headers: headers() });
     if (!res.ok) throw new Error(`Alpaca account error: ${res.status}`);
     const data = await res.json();
+    const cash = parseFloat(data.cash);
+    // Alpaca exposes `cash_withdrawable` for the settled-cash component on
+    // cash accounts. On margin accounts the field equals `cash` (no T+1
+    // settlement constraint), so the mapping is safe in both cases.
+    // Explicit null/undefined check, NOT truthy: a fully-unsettled cash
+    // account legitimately reports `cash_withdrawable: 0` (or "0") which
+    // a truthy check would treat as missing and fall back to `cash`,
+    // making us under-count unsettled funds and over-count settled.
+    const settledCash =
+      data.cash_withdrawable != null ? parseFloat(data.cash_withdrawable) : cash;
     return {
-      cash: parseFloat(data.cash),
+      cash,
       portfolioValue: parseFloat(data.portfolio_value),
       buyingPower: parseFloat(data.buying_power),
+      settledCash,
+      unsettledCash: Math.max(0, cash - settledCash),
     };
   }
 
-  async getPositions(): Promise<AlpacaPosition[]> {
+  async getPositions(): Promise<BrokerPosition[]> {
     const res = await fetch(`${baseUrl()}/positions`, { headers: headers() });
     if (!res.ok) throw new Error(`Alpaca positions error: ${res.status}`);
     const data = await res.json();
@@ -75,7 +67,7 @@ class AlpacaOrderService {
     }));
   }
 
-  async submitOrder(params: SubmitOrderParams): Promise<AlpacaOrder> {
+  async submitOrder(params: SubmitOrderParams): Promise<BrokerOrder> {
     const body: Record<string, string> = {
       symbol: params.symbol,
       qty: String(params.qty),
@@ -96,42 +88,52 @@ class AlpacaOrderService {
       throw new Error(`Alpaca order error: ${res.status} ${text}`);
     }
     const data = await res.json();
-    return this.mapOrder(data);
+    return mapOrder(data);
   }
 
-  async getOrder(orderId: string): Promise<AlpacaOrder> {
+  async getOrder(orderId: string): Promise<BrokerOrder> {
     const res = await fetch(`${baseUrl()}/orders/${orderId}`, { headers: headers() });
     if (!res.ok) throw new Error(`Alpaca getOrder error: ${res.status}`);
     const data = await res.json();
-    return this.mapOrder(data);
+    return mapOrder(data);
   }
 
-  async getOpenOrders(): Promise<AlpacaOrder[]> {
+  async getOpenOrders(): Promise<BrokerOrder[]> {
     const res = await fetch(`${baseUrl()}/orders?status=open`, { headers: headers() });
     if (!res.ok) throw new Error(`Alpaca getOpenOrders error: ${res.status}`);
     const data = await res.json();
-    return data.map((o: Record<string, unknown>) => this.mapOrder(o));
+    return data.map((o: Record<string, unknown>) => mapOrder(o));
   }
 
-  /**
-   * List orders submitted on or after the given ISO timestamp. Used to derive
-   * the 30-day wash-sale watchlist without needing local persistence.
-   */
-  async getOrdersSince(sinceIso: string, status: 'all' | 'closed' | 'open' = 'closed'): Promise<AlpacaOrder[]> {
-    const qs = new URLSearchParams({ status, after: sinceIso, limit: '500', direction: 'desc' });
+  async getOrdersSince(
+    sinceIso: string,
+    status: OrderStatusFilter = 'closed',
+  ): Promise<BrokerOrder[]> {
+    const qs = new URLSearchParams({
+      status,
+      after: sinceIso,
+      limit: '500',
+      direction: 'desc',
+    });
     const res = await fetch(`${baseUrl()}/orders?${qs.toString()}`, { headers: headers() });
     if (!res.ok) throw new Error(`Alpaca getOrdersSince error: ${res.status}`);
     const data = await res.json();
-    return data.map((o: Record<string, unknown>) => this.mapOrder(o));
+    return data.map((o: Record<string, unknown>) => mapOrder(o));
   }
 
   async cancelOrder(orderId: string): Promise<void> {
-    const res = await fetch(`${baseUrl()}/orders/${orderId}`, { method: 'DELETE', headers: headers() });
+    const res = await fetch(`${baseUrl()}/orders/${orderId}`, {
+      method: 'DELETE',
+      headers: headers(),
+    });
     if (!res.ok) throw new Error(`Alpaca cancel error: ${res.status}`);
   }
 
   async closePosition(symbol: string): Promise<void> {
-    const res = await fetch(`${baseUrl()}/positions/${symbol}`, { method: 'DELETE', headers: headers() });
+    const res = await fetch(`${baseUrl()}/positions/${symbol}`, {
+      method: 'DELETE',
+      headers: headers(),
+    });
     if (!res.ok) {
       // Alpaca's body usually contains the actionable reason (e.g. "trade
       // denied due to pattern day trading protection") — surface it so the UI
@@ -149,22 +151,25 @@ class AlpacaOrderService {
   }
 
   async closeAllPositions(): Promise<void> {
-    const res = await fetch(`${baseUrl()}/positions`, { method: 'DELETE', headers: headers() });
+    const res = await fetch(`${baseUrl()}/positions`, {
+      method: 'DELETE',
+      headers: headers(),
+    });
     if (!res.ok) throw new Error(`Alpaca closeAll error: ${res.status}`);
-  }
-
-  private mapOrder(data: Record<string, unknown>): AlpacaOrder {
-    return {
-      id: data.id as string,
-      symbol: data.symbol as string,
-      status: data.status as string,
-      side: data.side === 'sell' ? 'sell' : 'buy',
-      filledAvgPrice: data.filled_avg_price ? parseFloat(data.filled_avg_price as string) : null,
-      filledQty: data.filled_qty ? parseFloat(data.filled_qty as string) : null,
-      filledAt: (data.filled_at as string | null) ?? null,
-      submittedAt: (data.submitted_at as string | null) ?? null,
-    };
   }
 }
 
-export const alpacaOrderService = new AlpacaOrderService();
+function mapOrder(data: Record<string, unknown>): BrokerOrder {
+  return {
+    id: data.id as string,
+    symbol: data.symbol as string,
+    status: data.status as string,
+    side: data.side === 'sell' ? 'sell' : 'buy',
+    filledAvgPrice: data.filled_avg_price
+      ? parseFloat(data.filled_avg_price as string)
+      : null,
+    filledQty: data.filled_qty ? parseFloat(data.filled_qty as string) : null,
+    filledAt: (data.filled_at as string | null) ?? null,
+    submittedAt: (data.submitted_at as string | null) ?? null,
+  };
+}

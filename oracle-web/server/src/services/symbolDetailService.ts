@@ -9,7 +9,7 @@ import {
   ModeratorSignal,
 } from './moderatorAlertService.js';
 import { MessageEvent, SymbolMessageContext } from './messageService.js';
-import { AlpacaPosition } from './alpacaOrderService.js';
+import type { BrokerPosition } from '../types/broker.js';
 
 export interface ModeratorBackupMention extends ModeratorBackup {
   postTitle: string;
@@ -38,7 +38,7 @@ export interface SymbolDetail {
         rMultiple: number | null;
       })
     | null;
-  position: AlpacaPosition | null;
+  position: BrokerPosition | null;
   candidate: TradeCandidate | null;
   rejection: FilterRejection | null;
   cooldownExpiresAt: string | null;
@@ -72,7 +72,7 @@ export interface SymbolDetailInputs {
   messageContext: SymbolMessageContext;
   recentMessages: MessageEvent[];
   ledger: TradeLedgerEntry[];
-  positions: AlpacaPosition[];
+  positions: BrokerPosition[];
   messageLookbackMs?: number;
 }
 
