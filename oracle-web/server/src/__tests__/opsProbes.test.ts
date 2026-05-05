@@ -10,6 +10,8 @@ import {
   probeRecordingDisk,
   probePolygonApi,
   probeAlpacaIexBars,
+  probeIbkrGateway,
+  probeChromeDebugPort,
   type ProbeDeps,
 } from '../services/opsProbes.js';
 
@@ -138,5 +140,34 @@ describe('active probes', () => {
     ];
     const r = await probeAlpacaIexBars({ recent });
     expect(r.status).toBe('ok');
+  });
+});
+
+describe('conditional probes', () => {
+  it('ibkr_gateway returns unknown when broker is alpaca', async () => {
+    const r = await probeIbkrGateway({ activeBroker: 'alpaca', tickle: async () => ({ iserver: { authStatus: { authenticated: false } } }) });
+    expect(r.status).toBe('unknown');
+  });
+
+  it('ibkr_gateway ok when iserver authenticated', async () => {
+    const r = await probeIbkrGateway({ activeBroker: 'ibkr', tickle: async () => ({ iserver: { authStatus: { authenticated: true } } }) });
+    expect(r.status).toBe('ok');
+  });
+
+  it('ibkr_gateway red with re-auth message when not authenticated', async () => {
+    const r = await probeIbkrGateway({ activeBroker: 'ibkr', tickle: async () => ({ iserver: { authStatus: { authenticated: false } } }) });
+    expect(r.status).toBe('red');
+    expect(r.message).toMatch(/re-auth/i);
+  });
+
+  it('chrome_debug_port ok when /json/version returns 200', async () => {
+    const r = await probeChromeDebugPort({ probeUrl: async () => ({ ok: true, status: 200 }) });
+    expect(r.status).toBe('ok');
+  });
+
+  it('chrome_debug_port red on connection failure', async () => {
+    const r = await probeChromeDebugPort({ probeUrl: async () => { throw new Error('ECONNREFUSED'); } });
+    expect(r.status).toBe('red');
+    expect(r.message).toContain('ECONNREFUSED');
   });
 });

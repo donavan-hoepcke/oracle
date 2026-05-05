@@ -174,3 +174,33 @@ export function inspectRecordingDir(dir: string): DiskProbeDeps {
   void resolve;
   return { availableBytes, dirWritable };
 }
+
+export interface IbkrProbeDeps {
+  activeBroker: 'alpaca' | 'ibkr';
+  tickle: () => Promise<{ iserver?: { authStatus?: { authenticated?: boolean } } }>;
+}
+
+export async function probeIbkrGateway(deps: IbkrProbeDeps): Promise<ProbeResult> {
+  if (deps.activeBroker !== 'ibkr') return unknown('ibkr_gateway', 'broker.active is alpaca; gateway not in use');
+  try {
+    const t = await deps.tickle();
+    if (t.iserver?.authStatus?.authenticated) return ok('ibkr_gateway', 'gateway authenticated');
+    return red('ibkr_gateway', 're-auth needed (browse to https://localhost:5000)');
+  } catch (err) {
+    return red('ibkr_gateway', `gateway unreachable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export interface ChromeProbeDeps {
+  probeUrl: () => Promise<{ ok: boolean; status: number }>;
+}
+
+export async function probeChromeDebugPort(deps: ChromeProbeDeps): Promise<ProbeResult> {
+  try {
+    const r = await deps.probeUrl();
+    if (r.ok) return ok('chrome_debug_port', `Chrome debug port reachable (HTTP ${r.status})`);
+    return red('chrome_debug_port', `Chrome debug port returned HTTP ${r.status}`);
+  } catch (err) {
+    return red('chrome_debug_port', `Chrome unreachable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
