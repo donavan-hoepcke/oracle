@@ -56,3 +56,31 @@ export async function probeWsClients(deps: ProbeDeps): Promise<ProbeResult> {
   // WS client count is informational, never a failure.
   return ok('ws_clients', `${deps.wsClientCount} client${deps.wsClientCount === 1 ? '' : 's'} connected`);
 }
+
+export interface SnapshotLike {
+  fetchedAt: string | null;
+  error: string | null;
+}
+
+function probeSnapshot(name: ProbeName, snap: SnapshotLike, maxAgeMs: number): ProbeResult {
+  if (!snap.fetchedAt) return unknown(name, 'no fetch yet');
+  if (snap.error) return red(name, `error: ${snap.error}`);
+  const ageMs = Date.now() - new Date(snap.fetchedAt).getTime();
+  if (ageMs > maxAgeMs) {
+    return red(name, `last fetch ${Math.round(ageMs / 1000)}s ago (stale > ${Math.round(maxAgeMs / 1000)}s)`);
+  }
+  return ok(name, `fetch ${Math.round(ageMs / 1000)}s ago`);
+}
+
+export async function probeModeratorAlerts(snap: SnapshotLike): Promise<ProbeResult> {
+  return probeSnapshot('moderator_alerts', snap, 6 * 60_000);
+}
+export async function probeIncomeTraderChat(snap: SnapshotLike): Promise<ProbeResult> {
+  return probeSnapshot('income_trader_chat', snap, 3 * 60_000);
+}
+export async function probeFloatMap(snap: SnapshotLike): Promise<ProbeResult> {
+  return probeSnapshot('float_map', snap, 4 * 60_000);
+}
+export async function probeSectorHotness(snap: SnapshotLike): Promise<ProbeResult> {
+  return probeSnapshot('sector_hotness', snap, 10 * 60_000);
+}
