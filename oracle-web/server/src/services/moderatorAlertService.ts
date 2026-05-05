@@ -19,6 +19,7 @@ export interface ModeratorBackup {
 
 export type ModeratorPostKind =
   | 'alert'
+  | 'double_down'
   | 'backups'
   | 'pre_market_prep'
   | 'weekend_resources'
@@ -48,6 +49,9 @@ const SIGNAL_LINE_RE = /^Signal:\s*\$?([\d.]+)/i;
 const RISK_LINE_RE = /^Risk\s*Zone:.*?\$+([\d.]+)/i;
 const TARGET_LINE_RE = /^Target:\s*(.+)$/i;
 const TICKER_RE = /^\$([A-Z][A-Z0-9.-]{0,6})(?:\s|$)/;
+// Loose ticker scan for posts that don't follow the Signal/Risk/Target format
+// (e.g. Double Down notes). Matches a $TICKER anywhere on a line.
+const LOOSE_TICKER_RE = /\$([A-Z][A-Z0-9.-]{0,6})\b/;
 // Backup lines always price the ticker with a "$" prefix (e.g., "$TOVX $0.45"
 // or "$RMSG Double tap on $1.18"). Requiring the $ rejects narrative mentions
 // like "$EFOI to fast to alert, but plenty of time ... 30 minutes in advance".
@@ -56,10 +60,23 @@ const BACKUP_LINE_RE = /^\$([A-Z][A-Z0-9.-]{0,6})\s+(?:(.*?)\s+)?\$([\d.]+)(.*)?
 function classify(title: string): ModeratorPostKind {
   const t = title.toLowerCase();
   if (t.startsWith('daily market profits alert')) return 'alert';
+  // Double Down posts re-confirm an existing signal. Two formats observed in
+  // the room: "Double Down Alert 5-4-2026 $CLNN" (with ticker in title) and
+  // "Double Down Note 4-23-2026" (general note). Both classify as double_down
+  // so downstream consumers can match the bot's mod_double_down_long rule.
+  if (t.startsWith('double down') || t.startsWith('double-down')) return 'double_down';
   if (t.startsWith('backup ideas') || t.startsWith('backup idea')) return 'backups';
   if (t.startsWith('pre market prep') || t.startsWith('pre-market prep')) return 'pre_market_prep';
   if (t.startsWith('weekend resources')) return 'weekend_resources';
   return 'other';
+}
+
+function extractFirstTicker(lines: string[]): string | null {
+  for (const line of lines) {
+    const m = line.match(LOOSE_TICKER_RE);
+    if (m) return m[1];
+  }
+  return null;
 }
 
 function findTitleIndex(bodyLines: string[]): number {
@@ -186,8 +203,21 @@ export function parseModeratorAlertText(raw: string): ModeratorPost[] {
     // "Signal: $X.XX / Risk Zone: $Y.YY / Target: ..." block. Restricting
     // extraction to kind==='alert' missed these. We always run the extractors;
     // they return null/empty when no Signal: line is present.
-    const signal = extractSignal(postLines);
+    let signal = extractSignal(postLines);
     const backups = extractBackups(postLines);
+
+    // Double Down posts re-confirm an existing signal but rarely include a
+    // fresh "Signal: $X.XX" block — the price/risk live on the original alert
+    // they reference. If extractSignal returned null on a double_down, fall
+    // back to a loose $TICKER scan (title or body) so the post at least
+    // surfaces a symbol. Consumers join back to the original alert by
+    // ticker + recency (see stock_o_bot's mod_double_down_long rule).
+    if (signal === null && kind === 'double_down') {
+      const symbol = extractFirstTicker(postLines);
+      if (symbol) {
+        signal = { symbol, signal: null, riskZone: null, target: null, targetFloor: null };
+      }
+    }
 
     posts.push({
       title,

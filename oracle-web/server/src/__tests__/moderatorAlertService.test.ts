@@ -143,6 +143,59 @@ Apr 14, 2026 6:37 AM
     expect(post.signal?.targetFloor).toBe(2);
   });
 
+  it('classifies "Double Down Alert ... $TICKER" as double_down with extracted symbol', () => {
+    // Format observed in the room when a moderator re-confirms an existing
+    // signal mid-move. The bot's mod_double_down_long rule needs both the
+    // kind label and the ticker to join back to the original alert.
+    const raw = `Double Down Alert 5-4-2026 $CLNN
+
+Signal still live, organic fills coming in.
+
+Daily Market Profit Alert
+Daily Income Trader, Daily Market Profits +1 more
+STT-Shirley
+May 4, 2026 10:13 AM
+`;
+    const [post] = parseModeratorAlertText(raw);
+    expect(post.kind).toBe('double_down');
+    expect(post.signal?.symbol).toBe('CLNN');
+    // No Signal:/Risk Zone:/Target: in this format — those fields stay null
+    // and consumers fetch them from the original alert by ticker + recency.
+    expect(post.signal?.signal).toBeNull();
+    expect(post.signal?.riskZone).toBeNull();
+  });
+
+  it('classifies "Double Down Note" with body ticker and extracts it', () => {
+    const raw = `Double Down Note 4-23-2026
+
+$XYZ adding here
+
+Daily Market Profit Alert
+Daily Income Trader, Daily Market Profits +1 more
+Tim Bohen
+Apr 23, 2026 10:00 AM
+`;
+    const [post] = parseModeratorAlertText(raw);
+    expect(post.kind).toBe('double_down');
+    expect(post.signal?.symbol).toBe('XYZ');
+  });
+
+  it('classifies "Double Down Note" without ticker as double_down with null signal', () => {
+    // Some Double Down posts are bare title-only. Still want the kind label
+    // so downstream consumers don't treat them as generic "other" content;
+    // they can correlate with chat fills or skip if no symbol is recoverable.
+    const raw = `Double Down Note 4-23-2026
+
+Daily Market Profit Alert
+Daily Income Trader, Daily Market Profits +1 more
+Tim Bohen
+Apr 23, 2026 10:00 AM
+`;
+    const [post] = parseModeratorAlertText(raw);
+    expect(post.kind).toBe('double_down');
+    expect(post.signal).toBeNull();
+  });
+
   it('parses backup lines with descriptive notes around the price', () => {
     const raw = `Backup Ideas 4-13-2026
 
