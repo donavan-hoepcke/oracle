@@ -102,6 +102,7 @@ describe('RawStreamService.bind() integration', () => {
         targetFloor: 6,
       },
       backups: [{ symbol: 'CNSP', price: 10.65, note: null }],
+      symbols: [],
     };
     moderatorAlertService.ingestPosts([post]);
     rawStreamService.unbindAll();
@@ -134,6 +135,7 @@ describe('RawStreamService.bind() integration', () => {
       body: longBody,
       signal: null,
       backups: [],
+      symbols: [],
     };
     moderatorAlertService.ingestPosts([post]);
     rawStreamService.unbindAll();
@@ -158,6 +160,7 @@ describe('RawStreamService.bind() integration', () => {
       body: 'just commentary, no signal block today',
       signal: null,
       backups: [],
+      symbols: [],
     };
     moderatorAlertService.ingestPosts([post]);
     rawStreamService.unbindAll();
@@ -179,6 +182,7 @@ describe('RawStreamService.bind() integration', () => {
       body: '',
       signal: null,
       backups: [],
+      symbols: [],
     };
     const b: ModeratorPost = { ...a, title: 'alert B' };
     moderatorAlertService.ingestPosts([a, b]);
@@ -203,6 +207,7 @@ describe('RawStreamService.bind() integration', () => {
       body: 'Signal: $6.01',
       signal: { symbol: 'PN', signal: 6.01, riskZone: 5.7, target: null, targetFloor: null },
       backups: [],
+      symbols: [],
     };
     // Three poll cycles, same post each time (mirrors real upstream behavior).
     moderatorAlertService.ingestPosts([post]);
@@ -223,6 +228,7 @@ describe('RawStreamService.bind() integration', () => {
       body: '',
       signal: null,
       backups: [],
+      symbols: [],
     };
     moderatorAlertService.ingestPosts([base]);
     moderatorAlertService.ingestPosts([{ ...base, postedAt: '2026-05-05T06:43:00.000Z' }]);
@@ -241,6 +247,7 @@ describe('RawStreamService.bind() integration', () => {
       body: '',
       signal: null,
       backups: [],
+      symbols: [],
     };
     moderatorAlertService.ingestPosts([post]);
     rawStreamService.reset();

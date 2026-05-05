@@ -67,6 +67,7 @@ describe('buildSignalsInbox', () => {
           body: '$BBBB\nSignal: $2.00\nRisk Zone: $1.80\nTarget: $2.50',
           signal: { symbol: 'BBBB', signal: 2.0, riskZone: 1.8, target: '$2.50', targetFloor: 2.5 },
           backups: [],
+          symbols: [],
         },
       ],
     };
@@ -102,6 +103,7 @@ describe('buildSignalsInbox', () => {
             { symbol: 'AAAA', price: 1.0, note: null },
             { symbol: 'BBBB', price: 2.0, note: 'first reclaim' },
           ],
+          symbols: [],
         },
       ],
     };
@@ -156,6 +158,7 @@ describe('buildSignalsInbox', () => {
           body: '$OLD\nSignal: $1\nRisk Zone: $0.9\nTarget: $1.5',
           signal: { symbol: 'OLD', signal: 1, riskZone: 0.9, target: '$1.5', targetFloor: 1.5 },
           backups: [],
+          symbols: [],
         },
         {
           title: 'Daily Market Profits Alert: $NEW',
@@ -165,6 +168,7 @@ describe('buildSignalsInbox', () => {
           body: '$NEW\nSignal: $2\nRisk Zone: $1.8\nTarget: $2.5',
           signal: { symbol: 'NEW', signal: 2, riskZone: 1.8, target: '$2.5', targetFloor: 2.5 },
           backups: [],
+          symbols: [],
         },
       ],
     };

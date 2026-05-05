@@ -143,10 +143,15 @@ Apr 14, 2026 6:37 AM
     expect(post.signal?.targetFloor).toBe(2);
   });
 
-  it('classifies "Double Down Alert ... $TICKER" as double_down with extracted symbol', () => {
+  it('classifies "Double Down Alert ... $TICKER" as double_down with ticker in symbols[]', () => {
     // Format observed in the room when a moderator re-confirms an existing
     // signal mid-move. The bot's mod_double_down_long rule needs both the
     // kind label and the ticker to join back to the original alert.
+    // Crucially: the ticker goes in `symbols[]`, NOT in `signal.symbol`,
+    // because Double Down posts are not standalone primary signals — they
+    // reference an existing one. Downstream `if (post.signal)` consumers
+    // (signalsService, symbolDetailService) must keep treating only real
+    // Signal:/Risk Zone:/Target: blocks as primary actionable.
     const raw = `Double Down Alert 5-4-2026 $CLNN
 
 Signal still live, organic fills coming in.
@@ -158,14 +163,11 @@ May 4, 2026 10:13 AM
 `;
     const [post] = parseModeratorAlertText(raw);
     expect(post.kind).toBe('double_down');
-    expect(post.signal?.symbol).toBe('CLNN');
-    // No Signal:/Risk Zone:/Target: in this format — those fields stay null
-    // and consumers fetch them from the original alert by ticker + recency.
-    expect(post.signal?.signal).toBeNull();
-    expect(post.signal?.riskZone).toBeNull();
+    expect(post.signal).toBeNull();
+    expect(post.symbols).toContain('CLNN');
   });
 
-  it('classifies "Double Down Note" with body ticker and extracts it', () => {
+  it('classifies "Double Down Note" with body ticker and extracts it into symbols[]', () => {
     const raw = `Double Down Note 4-23-2026
 
 $XYZ adding here
@@ -177,13 +179,39 @@ Apr 23, 2026 10:00 AM
 `;
     const [post] = parseModeratorAlertText(raw);
     expect(post.kind).toBe('double_down');
-    expect(post.signal?.symbol).toBe('XYZ');
+    expect(post.signal).toBeNull();
+    expect(post.symbols).toContain('XYZ');
   });
 
-  it('classifies "Double Down Note" without ticker as double_down with null signal', () => {
-    // Some Double Down posts are bare title-only. Still want the kind label
-    // so downstream consumers don't treat them as generic "other" content;
-    // they can correlate with chat fills or skip if no symbol is recoverable.
+  it('Double Down with a fresh Signal: block populates signal as a new level to watch', () => {
+    // Per moderator convention: a Double Down usually re-confirms the *original*
+    // signal (no new Signal: block, signal stays null). But sometimes a mod
+    // identifies a *new level to watch* and attaches a fresh Signal:/Risk Zone:
+    // block — in that case it IS a standalone actionable signal. The kind label
+    // 'double_down' lets consumers distinguish it from a regular 'alert' while
+    // still getting the structured data.
+    const raw = `Double Down Alert 5-4-2026 $CLNN
+
+New level to watch:
+
+Signal: $7.95
+Risk Zone: $7.70
+Target: $9+
+
+Daily Market Profit Alert
+Daily Income Trader, Daily Market Profits +1 more
+STT-Shirley
+May 4, 2026 11:00 AM
+`;
+    const [post] = parseModeratorAlertText(raw);
+    expect(post.kind).toBe('double_down');
+    expect(post.signal?.symbol).toBe('CLNN');
+    expect(post.signal?.signal).toBe(7.95);
+    expect(post.signal?.riskZone).toBe(7.7);
+    expect(post.symbols).toContain('CLNN');
+  });
+
+  it('classifies "Double Down Note" without ticker as double_down with empty symbols[]', () => {
     const raw = `Double Down Note 4-23-2026
 
 Daily Market Profit Alert
@@ -194,6 +222,43 @@ Apr 23, 2026 10:00 AM
     const [post] = parseModeratorAlertText(raw);
     expect(post.kind).toBe('double_down');
     expect(post.signal).toBeNull();
+    expect(post.symbols).toEqual([]);
+  });
+
+  it('regression: Double Down with ticker does NOT pollute primary signal slot', () => {
+    // symbolDetailService.collectModerator scans for post.signal && post.signal.symbol === target.
+    // If we populated signal on Double Down posts, a fresh DD note could overwrite the real
+    // alert as the symbol's primary with all numeric fields null. Guard against that.
+    const raw = `Daily Market Profits Alert 5-4-2026
+
+$CLNN
+
+Signal: $7.54
+Risk Zone: $7.16
+Target: $9+
+
+Daily Market Profit Alert
+Daily Income Trader, Daily Market Profits +1 more
+Tim Bohen
+May 4, 2026 6:00 AM
+
+Double Down Alert 5-4-2026 $CLNN
+
+Re-confirming the signal.
+
+Daily Market Profit Alert
+Daily Income Trader, Daily Market Profits +1 more
+STT-Shirley
+May 4, 2026 10:13 AM
+`;
+    const posts = parseModeratorAlertText(raw);
+    expect(posts).toHaveLength(2);
+    const realAlert = posts.find((p) => p.kind === 'alert');
+    const dd = posts.find((p) => p.kind === 'double_down');
+    expect(realAlert?.signal?.signal).toBe(7.54);
+    expect(realAlert?.signal?.riskZone).toBe(7.16);
+    expect(dd?.signal).toBeNull();
+    expect(dd?.symbols).toContain('CLNN');
   });
 
   it('parses backup lines with descriptive notes around the price', () => {
@@ -231,6 +296,7 @@ describe('moderatorAlertService onAlerts subscription', () => {
       targetFloor: 4.8,
     },
     backups: [],
+      symbols: [],
   };
 
   it('fires the listener when ingestPosts is called and stops after unsubscribe', () => {
