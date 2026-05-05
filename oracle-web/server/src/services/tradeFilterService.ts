@@ -17,6 +17,14 @@ export interface AccountState {
   deployedCapital: number;
   dailyRealizedPnl: number;
   dailyUnrealizedPnl: number;
+  // Cash-account fields used by sizing to avoid free-riding violations.
+  // settledCash is the portion of `cash` that has cleared T+1 settlement
+  // and can legally fund a new buy that may also be sold same-day. On a
+  // margin account these are not relevant — the broker adapter sets
+  // settledCash === cash and isCashAccount === false, in which case
+  // sizing falls back to using `cash` as before.
+  settledCash: number;
+  isCashAccount: boolean;
 }
 
 export interface FilterResult {
@@ -49,7 +57,11 @@ class TradeFilterService {
       return { passed: false, reason: `max_positions ${exec.max_positions} reached` };
     }
 
-    const capitalPct = account.cash > 0 ? account.deployedCapital / account.cash : 1;
+    // On cash accounts size against settledCash so we don't deploy unsettled
+    // proceeds (free-riding violation if we then sell those positions
+    // before T+1). Margin accounts: settledCash equals cash, no behavior change.
+    const sizingCash = account.isCashAccount ? account.settledCash : account.cash;
+    const capitalPct = sizingCash > 0 ? account.deployedCapital / sizingCash : 1;
     if (capitalPct >= exec.max_capital_pct) {
       return { passed: false, reason: `capital deployed ${(capitalPct * 100).toFixed(1)}% exceeds max ${(exec.max_capital_pct * 100).toFixed(1)}%` };
     }
@@ -128,7 +140,11 @@ class TradeFilterService {
     }
 
     const riskSizedShares = Math.floor(exec.risk_per_trade / riskPerShare);
-    const maxDeployable = Math.max(0, account.cash * exec.max_capital_pct - account.deployedCapital);
+    // Cash accounts: cap deployment against settled cash only. Margin
+    // accounts behave as before because broker adapters set settledCash
+    // equal to cash and isCashAccount false.
+    const sizingCash = account.isCashAccount ? account.settledCash : account.cash;
+    const maxDeployable = Math.max(0, sizingCash * exec.max_capital_pct - account.deployedCapital);
     const capitalCapShares = Math.floor(maxDeployable / entry);
     const tradeCostCapShares = exec.max_trade_cost > 0
       ? Math.floor(exec.max_trade_cost / entry)

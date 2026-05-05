@@ -77,6 +77,11 @@ function makeAccount(overrides: Partial<AccountState> = {}): AccountState {
     deployedCapital: 0,
     dailyRealizedPnl: 0,
     dailyUnrealizedPnl: 0,
+    // Default to a margin-style account so existing tests behave as before:
+    // settledCash equals cash and isCashAccount is false → sizing falls back
+    // to cash. Cash-account-specific tests override these explicitly.
+    settledCash: 10000,
+    isCashAccount: false,
     ...overrides,
   };
 }
@@ -165,6 +170,66 @@ describe('TradeFilterService', () => {
       const candidate = makeCandidate({ suggestedEntry: 1.00, suggestedStop: 1.00 });
       const size = tradeFilterService.calculatePositionSize(candidate, makeAccount());
       expect(size.shares).toBe(0);
+    });
+
+    describe('cash account settled-cash sizing (Phase 3)', () => {
+      it('sizes against settledCash when isCashAccount=true', () => {
+        // Cash=10000 but only 5000 settled (rest is unsettled proceeds from
+        // a recent sell). With 50% capital cap: maxDeployable = 5000*0.5 - 0
+        // = 2500, capping shares at floor(2500/100)=25, BELOW the
+        // risk-sized 20. Risk wins → 20 shares.
+        const candidate = makeCandidate({ suggestedEntry: 100, suggestedStop: 95 });
+        const account = makeAccount({
+          cash: 10000,
+          settledCash: 5000,
+          isCashAccount: true,
+        });
+        const size = tradeFilterService.calculatePositionSize(candidate, account);
+        expect(size.shares).toBe(20);
+      });
+
+      it('clips at settled-cash cap when settledCash is the binding constraint', () => {
+        // Cash=10000, settledCash=1000, isCashAccount=true. 50% of settled =
+        // 500 maxDeployable, floor(500/100)=5 shares. Risk would have allowed
+        // 20 — settled cash is the binding cap.
+        const candidate = makeCandidate({ suggestedEntry: 100, suggestedStop: 95 });
+        const account = makeAccount({
+          cash: 10000,
+          settledCash: 1000,
+          isCashAccount: true,
+        });
+        const size = tradeFilterService.calculatePositionSize(candidate, account);
+        expect(size.shares).toBe(5);
+      });
+
+      it('returns 0 shares when settled cash is fully unsettled', () => {
+        // Realistic free-riding scenario: just sold a position, all proceeds
+        // unsettled, settledCash=0. The bot must NOT enter a new position
+        // funded by unsettled cash.
+        const candidate = makeCandidate({ suggestedEntry: 100, suggestedStop: 95 });
+        const account = makeAccount({
+          cash: 10000,
+          settledCash: 0,
+          isCashAccount: true,
+        });
+        const size = tradeFilterService.calculatePositionSize(candidate, account);
+        expect(size.shares).toBe(0);
+      });
+
+      it('uses cash (not settledCash) when isCashAccount=false (margin)', () => {
+        // Margin account: settledCash field is irrelevant, the broker adapter
+        // typically sets it equal to cash. If for some reason it's lower,
+        // sizing should still use cash on a margin account.
+        const candidate = makeCandidate({ suggestedEntry: 100, suggestedStop: 95 });
+        const account = makeAccount({
+          cash: 10000,
+          settledCash: 1000, // pathological — should be ignored on margin
+          isCashAccount: false,
+        });
+        const size = tradeFilterService.calculatePositionSize(candidate, account);
+        // 50% of 10000 cash = 5000, floor(5000/100)=50, but risk-sized=20 wins.
+        expect(size.shares).toBe(20);
+      });
     });
   });
 
