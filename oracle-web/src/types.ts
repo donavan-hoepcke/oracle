@@ -420,3 +420,35 @@ export interface BacktestResult {
   equityCurve: EquityPoint[];
   skipped: Array<{ symbol: string; ts: string; reason: string }>;
 }
+
+export type ProbeName =
+  | 'oracle_scraper'
+  | 'broker_account'
+  | 'recording_disk'
+  | 'ws_clients'
+  | 'moderator_alerts'
+  | 'income_trader_chat'
+  | 'float_map'
+  | 'sector_hotness'
+  | 'polygon_api'
+  | 'alpaca_iex_bars'
+  | 'ibkr_gateway'
+  | 'chrome_debug_port';
+
+export type ProbeStatus = 'ok' | 'warn' | 'red' | 'needs_human' | 'unknown';
+
+export interface ProbeResult {
+  name: ProbeName;
+  status: ProbeStatus;
+  lastProbeAt: string;
+  lastOkAt: string | null;
+  message: string;
+  attemptedRecovery: boolean;
+  recoveredAt: string | null;
+  consecutiveFailures: number;
+}
+
+export interface OpsHealthSnapshot {
+  asOf: string;
+  probes: ProbeResult[];
+}
