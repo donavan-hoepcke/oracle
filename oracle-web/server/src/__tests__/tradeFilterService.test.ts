@@ -173,11 +173,13 @@ describe('TradeFilterService', () => {
     });
 
     describe('cash account settled-cash sizing (Phase 3)', () => {
-      it('sizes against settledCash when isCashAccount=true', () => {
+      it('sizes against settledCash when isCashAccount=true (risk-bound)', () => {
         // Cash=10000 but only 5000 settled (rest is unsettled proceeds from
-        // a recent sell). With 50% capital cap: maxDeployable = 5000*0.5 - 0
-        // = 2500, capping shares at floor(2500/100)=25, BELOW the
-        // risk-sized 20. Risk wins → 20 shares.
+        // a recent sell). With 50% capital cap on settled cash: maxDeployable
+        // = 5000*0.5 - 0 = 2500 → settled-cash cap is floor(2500/100)=25
+        // shares. Risk-sized = floor(100/(100-95))=20 shares. 20 < 25, so
+        // risk is the binding constraint → 20 shares. Test confirms cash-account
+        // mode falls back to the risk cap when settled cash isn't tight.
         const candidate = makeCandidate({ suggestedEntry: 100, suggestedStop: 95 });
         const account = makeAccount({
           cash: 10000,
