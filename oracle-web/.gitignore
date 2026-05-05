@@ -24,8 +24,9 @@ npm-debug.log*
 .chrome-debug-profile/
 
 # IBKR Client Portal Gateway — installed locally via
-# `npm run ibkr-gateway:install`. IBKR's IP, not redistributed in this repo.
-vendor/ibkr-gateway/
+# `npm run ibkr-gateway:install:paper` / `:live`. IBKR's IP, not
+# redistributed in this repo. Glob covers paper / live profiles.
+vendor/ibkr-gateway*/
 
 # IBKR adapter runtime state (conid cache, etc.)
 .ibkr-state/
