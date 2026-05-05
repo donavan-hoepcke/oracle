@@ -27,6 +27,16 @@ export interface ActiveTrade {
    */
   targetOrderId: string | null;
   stopOrderId: string | null;
+  /**
+   * Last stop price we successfully wrote to the broker. Tracked
+   * separately from `currentStop` so trailing-stop replacement is
+   * monotonic AND idempotent: if a ratchet succeeds in memory but the
+   * subsequent broker write fails, the next cycle still tries the
+   * replacement. Initialized to `initialStop` for new bracketed trades;
+   * unused (-Infinity sentinel) for non-bracketed legacy/adopted
+   * positions where the broker doesn't hold an active stop leg.
+   */
+  lastBrokerStop: number;
   status: 'pending' | 'filled' | 'exiting';
   trailingState: 'initial' | 'mfe_lock' | 'breakeven' | 'trailing';
   // Max favorable R-multiple observed since entry. Drives the give-back stop
@@ -347,6 +357,11 @@ export class ExecutionService {
         // and adopt them too.
         targetOrderId: null,
         stopOrderId: null,
+        // Sentinel meaning "no broker leg to track". Trailing-stop
+        // replacement is gated on `stopOrderId` truthiness so this
+        // value is never read for adopted trades — kept consistent
+        // with the type for clarity.
+        lastBrokerStop: -Infinity,
         status: 'filled',
         trailingState: 'initial',
         maxFavorableR: currentR,
@@ -545,6 +560,9 @@ export class ExecutionService {
           orderId: bracket.entry.id,
           targetOrderId: bracket.target.id,
           stopOrderId: bracket.stop.id,
+          // Broker stop leg starts at the entry-time stop. Trailing-stop
+          // replacement (manageFilled) will advance this monotonically.
+          lastBrokerStop: candidate.suggestedStop,
           status: 'pending',
           trailingState: 'initial',
           maxFavorableR: 0,
@@ -677,7 +695,6 @@ export class ExecutionService {
         }
       }
 
-      const stopBefore = trade.currentStop;
       if (rMultiple >= exec.trailing_start_r) {
         const newStop = currentPrice - exec.trailing_distance_r * trade.riskPerShare;
         trade.currentStop = Math.max(trade.currentStop, newStop);
@@ -693,22 +710,43 @@ export class ExecutionService {
         }
       }
 
-      // KNOWN GAP: when `currentStop` advances on a BRACKETED trade, we
-      // currently only update the in-memory value — the broker-side
-      // stop leg stays at its initial price. So trailing-stop "ratchets
-      // up" only inform the dashboard, not the broker. The broker still
-      // protects the trade at the initial stop (good, that's the whole
-      // point of bracket orders), but profit-locking on winners is
-      // disabled until BrokerAdapter.replaceStopLeg() is implemented in
-      // a follow-up PR. Log once per trade per ratchet event so the
-      // operator can see the divergence.
-      if (isBracketed && trade.currentStop > stopBefore) {
-        console.warn(
-          `[bracket trailing] ${trade.symbol}: in-memory stop ratcheted ` +
-            `${stopBefore.toFixed(3)} → ${trade.currentStop.toFixed(3)} but broker leg ` +
-            `${trade.stopOrderId} still at the entry-time stop. Trailing-stop replacement ` +
-            `is a TODO — see executionService.manageFilled().`,
-        );
+      // Phase 2.5: when in-memory `currentStop` ratchets up on a
+      // bracketed trade, push the change to the broker so the OCO leg
+      // protects the new (tighter) level. Failure here is logged but
+      // does NOT roll back the in-memory ratchet — the next cycle
+      // will retry the replacement, and worst case the bot's view of
+      // its risk is tighter than the broker's (graceful degradation,
+      // not double exposure).
+      //
+      // The retry-friendly gate is `currentStop > lastBrokerStop`
+      // alone — NOT `currentStop > stopBefore`. After a failed
+      // replaceStopLeg the in-cycle ratchet already happened on a
+      // prior tick; stopBefore on this tick equals currentStop, so a
+      // stopBefore-based gate would skip the retry forever. The
+      // lastBrokerStop comparison correctly identifies "broker doesn't
+      // have the latest stop yet" without needing same-cycle motion.
+      if (
+        isBracketed &&
+        trade.stopOrderId &&
+        trade.currentStop > trade.lastBrokerStop
+      ) {
+        const stopId = trade.stopOrderId;
+        const newPrice = trade.currentStop;
+        try {
+          const replacedId = await brokerService.replaceStopLeg(stopId, newPrice);
+          // Some adapters return a new id (cancel+resubmit semantics).
+          // Track it so subsequent ratchets address the right leg.
+          trade.stopOrderId = replacedId;
+          trade.lastBrokerStop = newPrice;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[bracket trailing] ${trade.symbol}: replaceStopLeg ` +
+              `${stopId}→${newPrice.toFixed(3)} failed: ${msg}. ` +
+              `In-memory stop is ${trade.currentStop.toFixed(3)}; broker leg unchanged. ` +
+              `Will retry next cycle.`,
+          );
+        }
       }
     }
   }

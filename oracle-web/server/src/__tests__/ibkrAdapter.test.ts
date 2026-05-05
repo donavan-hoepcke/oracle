@@ -391,6 +391,31 @@ describe('IbkrAdapter REST methods', () => {
     ).rejects.toThrow(/limit entry requires entryLimitPrice/);
   });
 
+  it('replaceStopLeg() POSTs to /iserver/account/.../order/{id} with new auxPrice', async () => {
+    let posted: { auxPrice?: number } | null = null;
+    let postedPath: string | null = null;
+    const fetch: typeof globalThis.fetch = async (url, init) => {
+      const u = new URL(url as string);
+      if (init?.method === 'POST' && u.pathname.includes('/iserver/account/')) {
+        postedPath = u.pathname;
+        posted = JSON.parse(init.body as string);
+        return new Response(JSON.stringify([{ order_id: 'stop-2' }]), {
+          status: 200,
+        }) as unknown as Response;
+      }
+      return new Response('not mocked', { status: 404 }) as unknown as Response;
+    };
+    const adapter = makeAdapter({ fetch });
+    const newId = await adapter.replaceStopLeg('stop-1', 7.95);
+
+    expect(postedPath).toBe('/v1/api/iserver/account/DU1234567/order/stop-1');
+    expect(posted).toEqual({ auxPrice: 7.95 });
+    // Adapter returns the echoed order id — gateway versions that
+    // cancel+resubmit internally yield a fresh id; in-place modifies
+    // echo the original.
+    expect(newId).toBe('stop-2');
+  });
+
   it('closePosition() submits a market order opposite-side at current qty', async () => {
     const conidCache = new IbkrConidCache({
       cachePath: await tempCachePath(),

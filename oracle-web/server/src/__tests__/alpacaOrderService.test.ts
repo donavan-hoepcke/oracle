@@ -199,6 +199,38 @@ describe('AlpacaAdapter', () => {
     });
   });
 
+  describe('replaceStopLeg', () => {
+    it('PATCHes /v2/orders/{id} with the new stop_price', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: 'leg-stop', symbol: 'AGAE', status: 'held', side: 'sell', type: 'stop' }),
+      });
+
+      const newId = await alpacaOrderService.replaceStopLeg('leg-stop', 0.55);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toContain('/v2/orders/leg-stop');
+      expect(init.method).toBe('PATCH');
+      const body = JSON.parse(init.body);
+      // Alpaca preserves the leg id on PATCH; the bracket relationship
+      // stays intact (target/stop OCO pair is still linked).
+      expect(body).toEqual({ stop_price: '0.55' });
+      expect(newId).toBe('leg-stop');
+    });
+
+    it('throws on broker rejection so the caller can retry next cycle', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        text: async () => '{"message":"trailing too tight"}',
+      });
+      await expect(alpacaOrderService.replaceStopLeg('leg-stop', 0.99)).rejects.toThrow(
+        /Alpaca replaceStopLeg error: 422/,
+      );
+    });
+  });
+
   describe('getPositions', () => {
     it('maps position response to typed objects', async () => {
       mockFetch.mockResolvedValueOnce({
