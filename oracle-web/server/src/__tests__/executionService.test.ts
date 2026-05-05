@@ -49,6 +49,14 @@ vi.mock('../services/brokers/index.js', () => ({
   brokerService: mockOrderService,
 }));
 
+// Eager ledger persistence is tested in ledgerStore.test.ts. Stub it out
+// here so executionService tests don't touch disk and don't need a
+// `config.recording` mock.
+vi.mock('../services/ledgerStore.js', () => ({
+  appendLedgerEntry: vi.fn(),
+  readLedgerForDay: vi.fn(() => []),
+}));
+
 vi.mock('../services/tradeFilterService.js', () => ({
   tradeFilterService: {
     filterCandidate: vi.fn().mockReturnValue({ passed: true, reason: null }),
@@ -748,6 +756,164 @@ describe('ExecutionService', () => {
       expect(added).toBe(1);
       expect(service.getLedger()).toHaveLength(2);
       expect(service.getLedger().map((e) => e.symbol).sort()).toEqual(['AAA', 'CCC']);
+    });
+  });
+
+  describe('detectBrokerDrivenCloses', () => {
+    beforeEach(() => {
+      // The circuit-breaker test earlier in the file overrides
+      // filterCandidate to a rejecting implementation; vi.clearAllMocks()
+      // resets call history but not implementations, so we have to
+      // restore the default explicitly here. Without this, our entry path
+      // never even calls submitBracketOrder.
+      vi.mocked(tradeFilterService.filterCandidate).mockReturnValue({
+        passed: true,
+        reason: null,
+      });
+    });
+
+    // Sets up an active filled trade we can then "close behind the bot's
+    // back" by manipulating what getPositions / getOrdersSince return on
+    // the next cycle. `entryTime` on activeTrades is `new Date()` (real
+    // wall clock), so sell-fill `filledAt` fixtures need to be after the
+    // actual test runtime. Helper anchors mock fills 1s in the future so
+    // the chronology check (`fill.filledAt >= trade.entryTime`) passes.
+    function laterIso(offsetMs: number = 1000): string {
+      return new Date(Date.now() + offsetMs).toISOString();
+    }
+
+    async function enterAndFill(): Promise<void> {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+      mockOrderService.getOrder.mockResolvedValue({
+        id: 'order-1',
+        status: 'filled',
+        filledAvgPrice: 0.5,
+        filledQty: 100,
+      });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.5)]);
+      expect(service.getActiveTrades().find((t) => t.symbol === 'AGAE')?.status).toBe('filled');
+    }
+
+    it('closes the activeTrade and writes a real ledger entry when broker has the matching sell fill', async () => {
+      await enterAndFill();
+
+      // Broker says: position gone, no open orders, but the matching sell
+      // fill is in the closed-orders history with a real fill price.
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([
+        {
+          id: 'sell-1',
+          symbol: 'AGAE',
+          status: 'filled',
+          side: 'sell',
+          filledAvgPrice: 0.55,
+          filledQty: 100,
+          filledAt: laterIso(),
+          submittedAt: laterIso(500),
+        },
+      ]);
+
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.55)]);
+
+      expect(service.getActiveTrades()).toHaveLength(0);
+      const ledger = service.getLedger();
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0].symbol).toBe('AGAE');
+      expect(ledger[0].exitPrice).toBe(0.55);
+      expect(ledger[0].pnl).toBeCloseTo(5, 5);
+      expect(ledger[0].exitDetail).toContain('Broker-driven close');
+      expect(ledger[0].exitDetail).toContain('sell-1');
+    });
+
+    it('leaves the activeTrade alone when the sell fill is not yet visible', async () => {
+      await enterAndFill();
+
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      // Empty fills — broker hasn't surfaced the close yet OR the trade
+      // never actually filled at the broker (stale phantom).
+      mockOrderService.getOrdersSince.mockResolvedValue([]);
+
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.5)]);
+
+      // Trade stays active, no ledger entry, retry next cycle.
+      expect(service.getActiveTrades()).toHaveLength(1);
+      expect(service.getLedger()).toHaveLength(0);
+    });
+
+    it('does not close when an open buy is still pending (entry not yet filled)', async () => {
+      await enterAndFill();
+
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([
+        { id: 'buy-pending', symbol: 'AGAE', status: 'new', side: 'buy', filledAvgPrice: null, filledQty: null, filledAt: null, submittedAt: '2026-05-05T14:00:00Z' },
+      ]);
+      mockOrderService.getOrdersSince.mockResolvedValue([]);
+
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.5)]);
+
+      // Open buy means "we don't own it yet", not "broker closed it" —
+      // do NOT manufacture a close.
+      expect(service.getActiveTrades()).toHaveLength(1);
+      expect(service.getLedger()).toHaveLength(0);
+    });
+
+    it('downsizes shares when broker has fewer than the bot expects (partial close)', async () => {
+      await enterAndFill();
+
+      mockOrderService.getPositions.mockResolvedValue([
+        {
+          symbol: 'AGAE',
+          qty: 60,
+          avgEntryPrice: 0.5,
+          currentPrice: 0.52,
+          marketValue: 31.2,
+          unrealizedPl: 1.2,
+        },
+      ]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([]);
+
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.52)]);
+
+      const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
+      expect(trade?.shares).toBe(60);
+      // Partial close intentionally does not write a ledger entry in v1.
+      expect(service.getLedger()).toHaveLength(0);
+    });
+
+    it('flags trailing_stop reason when the matched fill is at-or-below the trailed stop', async () => {
+      await enterAndFill();
+      // Force the activeTrade to look like a bracketed trade that has
+      // ratcheted its stop above entry — exit-near-stop should map to
+      // trailing_stop, not eod.
+      const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE')!;
+      trade.stopOrderId = 'stop-leg-id';
+      trade.currentStop = 0.52;
+
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([
+        {
+          id: 'sell-stop',
+          symbol: 'AGAE',
+          status: 'filled',
+          side: 'sell',
+          filledAvgPrice: 0.519,
+          filledQty: 100,
+          filledAt: laterIso(),
+          submittedAt: laterIso(500),
+        },
+      ]);
+
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.519)]);
+
+      expect(service.getActiveTrades()).toHaveLength(0);
+      const ledger = service.getLedger();
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0].exitReason).toBe('trailing_stop');
     });
   });
 });
