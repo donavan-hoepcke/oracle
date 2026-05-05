@@ -25,8 +25,53 @@ import { tickerBotService } from './services/tickerBotService.js';
 import { regimeService } from './services/regimeService.js';
 import { rawStreamService } from './services/rawStreamService.js';
 import { attachRawStreamSocket } from './websocket/rawStreamSocket.js';
+import { OpsMonitorService } from './services/opsMonitorService.js';
+import { buildDefaultRegistry } from './services/opsRecovery.js';
+import {
+  probeOracleScraper,
+  probeWsClients,
+  probeModeratorAlerts,
+  probeIncomeTraderChat,
+  probeFloatMap,
+  probeSectorHotness,
+  probeBrokerAccount,
+  probeRecordingDisk,
+  probePolygonApi,
+  probeAlpacaIexBars,
+  probeIbkrGateway,
+  probeChromeDebugPort,
+  inspectRecordingDir,
+} from './services/opsProbes.js';
+import { brokerService } from './services/brokers/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const polygonRolling: Array<{ ok: boolean; status?: number }> = [];
+const iexRolling: Array<{ ok: boolean; status?: number }> = [];
+
+function recordApiOutcome(
+  store: Array<{ ok: boolean; status?: number }>,
+  ok: boolean,
+  status?: number,
+): void {
+  store.push({ ok, status });
+  if (store.length > 10) store.shift();
+}
+
+// Exposed via globalThis so the Polygon and IEX call sites in their own
+// services can record outcomes without forcing them to import each other.
+// A follow-up task will swap this shim for proper getter exports on
+// polygonService / alpacaBarService. Until then, the rolling stores stay
+// empty and the corresponding probes report "no recent calls" → ok.
+(globalThis as unknown as {
+  __opsApiOutcomes: {
+    polygon: (ok: boolean, status?: number) => void;
+    iex: (ok: boolean, status?: number) => void;
+  };
+}).__opsApiOutcomes = {
+  polygon: (ok, status) => recordApiOutcome(polygonRolling, ok, status),
+  iex: (ok, status) => recordApiOutcome(iexRolling, ok, status),
+};
 
 const app = express();
 const server = createServer(app);
@@ -190,6 +235,24 @@ app.get('/api/sector-hotness', (_req, res) => {
 
 app.get('/api/moderator-alerts', (_req, res) => {
   res.json(moderatorAlertService.getSnapshot());
+});
+
+app.get('/api/ops/health', (_req, res) => {
+  res.json(opsMonitor.getSnapshot());
+});
+
+app.get('/api/ops/health/history', (req, res) => {
+  const probe = typeof req.query.probe === 'string' ? req.query.probe : '';
+  if (!probe) {
+    res.status(400).json({ error: 'probe query param required' });
+    return;
+  }
+  res.json({ probe, events: opsMonitor.getHistory(probe as never) });
+});
+
+app.post('/api/ops/health/reset', (_req, res) => {
+  opsMonitor.reset();
+  res.json({ ok: true });
 });
 
 app.get('/api/raw/income-trader-tickers', (_req, res) => {
@@ -757,6 +820,81 @@ incomeTraderChatService.start().catch((err) => {
   );
 });
 
+// Operational monitor: wires the probe functions to live deps and starts
+// the polling loop. Declared with `let` and assigned-after to avoid TDZ on
+// the `broker_account` probe, which captures `opsMonitor` in its closure.
+// (The closure is OK because the probe is only INVOKED later by start(),
+// after the assignment completes.)
+const opsMonitor: OpsMonitorService = new OpsMonitorService({
+  probes: {
+    oracle_scraper: () =>
+      probeOracleScraper({
+        botStatus: priceSocketServer.getBotStatus(),
+        wsClientCount:
+          (priceSocketServer as { getClientCount?: () => number }).getClientCount?.() ?? 0,
+      }),
+    ws_clients: () =>
+      probeWsClients({
+        botStatus: null,
+        wsClientCount:
+          (priceSocketServer as { getClientCount?: () => number }).getClientCount?.() ?? 0,
+      }),
+    moderator_alerts: () => probeModeratorAlerts(moderatorAlertService.getSnapshot()),
+    income_trader_chat: () => probeIncomeTraderChat(incomeTraderChatService.getSnapshot()),
+    float_map: () => probeFloatMap(floatMapService.getSnapshot()),
+    sector_hotness: () => probeSectorHotness(sectorHotnessService.getSnapshot()),
+    broker_account: () =>
+      probeBrokerAccount(
+        { getAccount: () => brokerService.getAccount() },
+        { broker_account: opsMonitor.getFailureCount('broker_account') },
+      ),
+    recording_disk: () => probeRecordingDisk(inspectRecordingDir(config.recording.dir)),
+    polygon_api: () => probePolygonApi({ recent: [...polygonRolling] }),
+    alpaca_iex_bars: () => probeAlpacaIexBars({ recent: [...iexRolling] }),
+    ibkr_gateway: () =>
+      probeIbkrGateway({
+        activeBroker: config.broker.active,
+        tickle: async () => {
+          if (config.broker.active !== 'ibkr') {
+            return { iserver: { authStatus: { authenticated: false } } };
+          }
+          const profile = config.broker.ibkr.profile;
+          const baseUrl = config.broker.ibkr.profiles[profile].base_url;
+          const res = await fetch(`${baseUrl}/tickle`, { method: 'POST' });
+          return res.json() as Promise<{
+            iserver?: { authStatus?: { authenticated?: boolean } };
+          }>;
+        },
+      }),
+    chrome_debug_port: () =>
+      probeChromeDebugPort({
+        probeUrl: async () => {
+          const res = await fetch(`${config.bot.playwright.chrome_cdp_url}/json/version`);
+          return { ok: res.ok, status: res.status };
+        },
+      }),
+  },
+  recovery: buildDefaultRegistry({
+    // tickerBotService.start/stop return Promise<BotStatus>, not Promise<void>;
+    // wrap them so the recovery action satisfies ScraperServiceLike.
+    tickerBotService: {
+      start: async () => {
+        await tickerBotService.start();
+      },
+      stop: async () => {
+        await tickerBotService.stop();
+      },
+    },
+    moderatorAlertService,
+    incomeTraderChatService,
+    floatMapService,
+    sectorHotnessService,
+  }),
+});
+
+opsMonitor.start();
+rawStreamService.bindOpsMonitorService(opsMonitor);
+
 // Start server
 server.listen(config.port, () => {
   console.log(`Oracle server running on http://localhost:${config.port}`);
@@ -771,6 +909,7 @@ process.on('SIGINT', () => {
   sectorHotnessService.stop().catch(() => {});
   moderatorAlertService.stop().catch(() => {});
   incomeTraderChatService.stop().catch(() => {});
+  opsMonitor.stop();
   server.close(() => {
     process.exit(0);
   });
@@ -778,6 +917,7 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   priceSocketServer.shutdown();
+  opsMonitor.stop();
   server.close(() => {
     process.exit(0);
   });
