@@ -1,6 +1,7 @@
 import { formatInTimeZone } from 'date-fns-tz';
 import { config } from '../config.js';
-import { alpacaOrderService, AlpacaOrder } from './alpacaOrderService.js';
+import { brokerService } from './brokers/index.js';
+import type { BrokerOrder } from '../types/broker.js';
 import { TradeLedgerEntry } from './executionService.js';
 
 /**
@@ -14,7 +15,7 @@ import { TradeLedgerEntry } from './executionService.js';
  */
 export function applyFillsToLedger(
   trades: TradeLedgerEntry[],
-  fills: AlpacaOrder[],
+  fills: BrokerOrder[],
 ): { reconciled: TradeLedgerEntry[]; changed: number } {
   const sellFills = fills
     .filter(
@@ -99,9 +100,9 @@ export class TradeReconciliationService {
     }
 
     const { afterIso } = dayBoundsUtc(date);
-    let orders: AlpacaOrder[] = [];
+    let orders: BrokerOrder[] = [];
     try {
-      orders = await alpacaOrderService.getOrdersSince(afterIso, 'closed');
+      orders = await brokerService.getOrdersSince(afterIso, 'closed');
     } catch (err) {
       console.warn(`reconcileDay(${date}) fetch failed:`, err instanceof Error ? err.message : err);
       return { trades, changed: 0, reconciled: false };

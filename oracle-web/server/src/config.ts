@@ -188,6 +188,22 @@ const configSchema = z.object({
     close: z.string().regex(/^\d{2}:\d{2}$/),
     timezone: z.string().default('America/New_York'),
   }),
+  broker: z
+    .object({
+      // Selects the active broker adapter at startup. Phase 1 only
+      // implements 'alpaca'; Phase 2 adds 'ibkr'.
+      active: z.enum(['alpaca', 'ibkr']).default('alpaca'),
+      alpaca: z
+        .object({
+          // Cash account vs margin account at the broker. Margin remains
+          // the default since Alpaca paper simulates margin trading.
+          // Setting this true on a true cash account will let
+          // tradeFilterService use settledCash for sizing (Phase 3).
+          cash_account: z.boolean().default(false),
+        })
+        .default({}),
+    })
+    .default({}),
   recording: z
     .object({
       enabled: z.boolean().default(true),

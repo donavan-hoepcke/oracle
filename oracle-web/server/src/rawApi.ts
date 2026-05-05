@@ -35,9 +35,9 @@ export function registerRawApi(app: Express): void {
     }
     const symbol = raw.toUpperCase();
     try {
-      const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+      const { brokerService } = await import('./services/brokers/index.js');
       const stocks = priceSocketServer.getStockStates();
-      const positions = await alpacaOrderService.getPositions().catch(() => []);
+      const positions = await brokerService.getPositions().catch(() => []);
       const candidates = await ruleEngineService.getRankedCandidates(stocks, 50).catch(() => []);
 
       const detail = buildSymbolDetail({

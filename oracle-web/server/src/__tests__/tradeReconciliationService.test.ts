@@ -9,8 +9,8 @@ const { mockConfig, getOrdersSinceMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../config.js', () => ({ config: mockConfig }));
-vi.mock('../services/alpacaOrderService.js', () => ({
-  alpacaOrderService: { getOrdersSince: getOrdersSinceMock },
+vi.mock('../services/brokers/index.js', () => ({
+  brokerService: { getOrdersSince: getOrdersSinceMock },
 }));
 
 import {
@@ -18,7 +18,7 @@ import {
   TradeReconciliationService,
 } from '../services/tradeReconciliationService.js';
 import type { TradeLedgerEntry } from '../services/executionService.js';
-import type { AlpacaOrder } from '../services/alpacaOrderService.js';
+import type { BrokerOrder } from '../types/broker.js';
 
 function trade(overrides: Partial<TradeLedgerEntry> = {}): TradeLedgerEntry {
   return {
@@ -40,7 +40,7 @@ function trade(overrides: Partial<TradeLedgerEntry> = {}): TradeLedgerEntry {
   };
 }
 
-function sellFill(overrides: Partial<AlpacaOrder> = {}): AlpacaOrder {
+function sellFill(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
   return {
     id: 'fill-1',
     symbol: 'AAA',

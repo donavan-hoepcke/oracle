@@ -123,6 +123,10 @@ market_hours:
   open: "09:30"
   close: "16:00"
   timezone: "America/New_York"
+broker:
+  active: "alpaca"
+  alpaca:
+    cash_account: false
 recording:
   enabled: true
   dir: "F:/oracle_data/recordings"

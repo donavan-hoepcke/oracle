@@ -6,7 +6,7 @@ import type { TradeCandidate } from '../services/ruleEngineService.js';
 import type { ModeratorAlertSnapshot } from '../services/moderatorAlertService.js';
 import type { FloatMapSnapshot } from '../services/floatMapService.js';
 import type { MessageEvent, SymbolMessageContext } from '../services/messageService.js';
-import type { AlpacaPosition } from '../services/alpacaOrderService.js';
+import type { BrokerPosition } from '../types/broker.js';
 
 const BASE_STOCK: StockState = {
   symbol: 'LOCL',
@@ -138,7 +138,7 @@ describe('buildSymbolDetail', () => {
       pendingSince: new Date('2026-04-21T13:45:00Z'),
       rationale: ['buy zone reclaim'],
     };
-    const position: AlpacaPosition = {
+    const position: BrokerPosition = {
       symbol: 'LOCL',
       qty: 100,
       avgEntryPrice: 1.0,

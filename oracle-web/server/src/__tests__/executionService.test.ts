@@ -43,8 +43,8 @@ const mockOrderService = vi.hoisted(() => ({
   closeAllPositions: vi.fn(),
 }));
 
-vi.mock('../services/alpacaOrderService.js', () => ({
-  alpacaOrderService: mockOrderService,
+vi.mock('../services/brokers/index.js', () => ({
+  brokerService: mockOrderService,
 }));
 
 vi.mock('../services/tradeFilterService.js', () => ({

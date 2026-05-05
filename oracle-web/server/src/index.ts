@@ -256,9 +256,9 @@ app.get('/api/trades', (_req, res) => {
 
 app.get('/api/scanner', async (_req, res) => {
   try {
-    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+    const { brokerService } = await import('./services/brokers/index.js');
     const stocks = priceSocketServer.getStockStates();
-    const positionsPromise = alpacaOrderService.getPositions().catch(() => []);
+    const positionsPromise = brokerService.getPositions().catch(() => []);
     const candidates = await ruleEngineService.getRankedCandidates(stocks, 20);
     const positions = await positionsPromise;
 
@@ -409,9 +409,9 @@ app.get('/api/symbol/:ticker', async (req, res) => {
   }
   const symbol = rawTicker.toUpperCase();
   try {
-    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+    const { brokerService } = await import('./services/brokers/index.js');
     const stocks = priceSocketServer.getStockStates();
-    const positionsPromise = alpacaOrderService.getPositions().catch(() => []);
+    const positionsPromise = brokerService.getPositions().catch(() => []);
     const candidates = await ruleEngineService.getRankedCandidates(stocks, 50);
     const positions = await positionsPromise;
 
@@ -442,10 +442,10 @@ app.get('/api/symbol/:ticker', async (req, res) => {
 
 app.get('/api/execution/journal', async (_req, res) => {
   try {
-    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
+    const { brokerService } = await import('./services/brokers/index.js');
     const [account, positions] = await Promise.all([
-      alpacaOrderService.getAccount(),
-      alpacaOrderService.getPositions(),
+      brokerService.getAccount(),
+      brokerService.getPositions(),
     ]);
     const deployedCapital = positions.reduce((sum, p) => sum + Math.abs(p.marketValue), 0);
     const unrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPl, 0);
@@ -512,8 +512,8 @@ app.get('/api/journal/history/:date', async (req, res) => {
 
 app.get('/api/execution/status', async (_req, res) => {
   try {
-    const { alpacaOrderService } = await import('./services/alpacaOrderService.js');
-    const account = await alpacaOrderService.getAccount();
+    const { brokerService } = await import('./services/brokers/index.js');
+    const account = await brokerService.getAccount();
     res.json({
       enabled: executionService.isEnabled(),
       paper: config.execution.paper,

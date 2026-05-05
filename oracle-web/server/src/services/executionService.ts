@@ -1,5 +1,6 @@
 import { config } from '../config.js';
-import { alpacaOrderService, type AlpacaPosition } from './alpacaOrderService.js';
+import { brokerService } from './brokers/index.js';
+import type { BrokerPosition } from '../types/broker.js';
 import { tradeFilterService, AccountState } from './tradeFilterService.js';
 import { TradeCandidate, CandidateSetup } from './ruleEngineService.js';
 import { StockState } from '../websocket/priceSocket.js';
@@ -131,7 +132,7 @@ export class ExecutionService {
 
     const sinceIso = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
     try {
-      const orders = await alpacaOrderService.getOrdersSince(sinceIso, 'closed');
+      const orders = await brokerService.getOrdersSince(sinceIso, 'closed');
       const next = new Set<string>();
       for (const o of orders) {
         if (o.filledAvgPrice !== null && o.filledQty !== null && o.symbol) {
@@ -193,7 +194,7 @@ export class ExecutionService {
     const { applyFillsToLedger } = await import('./tradeReconciliationService.js');
     let orders;
     try {
-      orders = await alpacaOrderService.getOrdersSince(startIso, 'closed');
+      orders = await brokerService.getOrdersSince(startIso, 'closed');
     } catch (err) {
       console.warn('reconcileLedgerFromAlpaca fetch failed:', err instanceof Error ? err.message : err);
       return 0;
@@ -228,7 +229,7 @@ export class ExecutionService {
    */
   private buildPriceMap(
     stocks: StockState[],
-    positions: AlpacaPosition[] | null,
+    positions: BrokerPosition[] | null,
   ): Map<string, number> {
     const priceMap = new Map<string, number>();
     for (const s of stocks) {
@@ -267,13 +268,13 @@ export class ExecutionService {
    * positions remain at the broker. Uses the live Oracle watchlist for stop
    * and target where available; falls back to max_risk_pct-derived defaults.
    */
-  private async reconcileWithAlpaca(stocks: StockState[]): Promise<AlpacaPosition[] | null> {
+  private async reconcileWithAlpaca(stocks: StockState[]): Promise<BrokerPosition[] | null> {
     let positions;
     let openOrders;
     try {
       [positions, openOrders] = await Promise.all([
-        alpacaOrderService.getPositions(),
-        alpacaOrderService.getOpenOrders(),
+        brokerService.getPositions(),
+        brokerService.getOpenOrders(),
       ]);
     } catch (err) {
       console.error('Reconcile failed:', err);
@@ -360,8 +361,8 @@ export class ExecutionService {
     const reserved = new Set<string>();
     try {
       const [positions, openOrders] = await Promise.all([
-        alpacaOrderService.getPositions(),
-        alpacaOrderService.getOpenOrders(),
+        brokerService.getPositions(),
+        brokerService.getOpenOrders(),
       ]);
       for (const p of positions) reserved.add(p.symbol);
       for (const o of openOrders) reserved.add(o.symbol);
@@ -386,7 +387,7 @@ export class ExecutionService {
       }
     }
     try {
-      await alpacaOrderService.closeAllPositions();
+      await brokerService.closeAllPositions();
     } catch {
       // best effort
     }
@@ -414,8 +415,8 @@ export class ExecutionService {
   }
 
   private async buildAccountState(): Promise<AccountState> {
-    const account = await alpacaOrderService.getAccount();
-    const positions = await alpacaOrderService.getPositions();
+    const account = await brokerService.getAccount();
+    const positions = await brokerService.getPositions();
 
     if (this.startOfDayEquity === null) {
       this.startOfDayEquity = account.portfolioValue;
@@ -496,7 +497,7 @@ export class ExecutionService {
         : 'market' as const;
 
       try {
-        const order = await alpacaOrderService.submitOrder({
+        const order = await brokerService.submitOrder({
           symbol: candidate.symbol,
           qty: size.shares,
           side: 'buy',
@@ -535,7 +536,7 @@ export class ExecutionService {
     for (const trade of this.activeTrades) {
       if (trade.status !== 'pending') continue;
       try {
-        const order = await alpacaOrderService.getOrder(trade.orderId);
+        const order = await brokerService.getOrder(trade.orderId);
         if (order.status === 'filled') {
           trade.status = 'filled';
           if (order.filledAvgPrice) trade.entryPrice = order.filledAvgPrice;
@@ -555,7 +556,7 @@ export class ExecutionService {
     for (const trade of [...this.activeTrades]) {
       if (trade.status === 'pending' && now - trade.pendingSince.getTime() > PENDING_TIMEOUT_MS) {
         try {
-          await alpacaOrderService.cancelOrder(trade.orderId);
+          await brokerService.cancelOrder(trade.orderId);
         } catch {
           // best effort
         }
@@ -566,7 +567,7 @@ export class ExecutionService {
 
   private async manageFilled(
     stocks: StockState[],
-    positions: AlpacaPosition[] | null,
+    positions: BrokerPosition[] | null,
   ): Promise<void> {
     const priceMap = this.buildPriceMap(stocks, positions);
     const exec = config.execution;
@@ -655,7 +656,7 @@ export class ExecutionService {
     const previousStatus = trade.status;
     trade.status = 'exiting';
     try {
-      await alpacaOrderService.closePosition(trade.symbol);
+      await brokerService.closePosition(trade.symbol);
     } catch (err) {
       // Alpaca rejected the close (e.g. PDT cap, position locked, market closed
       // for an OTC name). Do NOT push a ledger entry or remove from activeTrades
