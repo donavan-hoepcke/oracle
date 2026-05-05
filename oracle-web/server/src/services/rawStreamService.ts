@@ -4,7 +4,8 @@ export type RawStreamEventType =
   | 'scanner_update'
   | 'message'
   | 'mod_alert'
-  | 'regime_shift';
+  | 'regime_shift'
+  | 'ops_health';
 
 export interface RawStreamEventInput {
   type: RawStreamEventType;
@@ -101,6 +102,10 @@ interface WatchlistHookSource {
   onWatchlistChange: (cb: (items: unknown[]) => void) => void;
 }
 
+interface OpsMonitorHookSource {
+  onUpdate: (cb: (snap: unknown) => void) => () => void;
+}
+
 export class RawStreamService {
   private emitter = new EventEmitter();
   private nextId = 1;
@@ -169,6 +174,15 @@ export class RawStreamService {
   bindRegimeService(svc: SnapshotHookSource): void {
     const off = svc.onSnapshot((snapshot) => {
       this.publish({ type: 'regime_shift', payload: snapshot });
+    });
+    this.unsubscribeFns.push(off);
+  }
+
+  bindOpsMonitorService(svc: OpsMonitorHookSource): void {
+    // Diff suppression happens upstream in the monitor's tick (only emits
+    // 'update' when state changes), so this just republishes verbatim.
+    const off = svc.onUpdate((snap) => {
+      this.publish({ type: 'ops_health', payload: snap });
     });
     this.unsubscribeFns.push(off);
   }
