@@ -37,6 +37,7 @@ const mockOrderService = vi.hoisted(() => ({
   getOpenOrders: vi.fn(),
   getOrdersSince: vi.fn(),
   submitOrder: vi.fn(),
+  submitBracketOrder: vi.fn(),
   getOrder: vi.fn(),
   cancelOrder: vi.fn(),
   closePosition: vi.fn(),
@@ -90,6 +91,18 @@ describe('ExecutionService', () => {
     mockOrderService.getOpenOrders.mockResolvedValue([]);
     mockOrderService.getOrdersSince.mockResolvedValue([]);
     mockOrderService.submitOrder.mockResolvedValue({ id: 'order-1', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null });
+    // Phase 2: entries go through submitBracketOrder, which returns
+    // { entry, target, stop }. Default mock returns target/stop with
+    // EMPTY ids so the resulting ActiveTrade has targetOrderId='' /
+    // stopOrderId='' and the polling-loop exit logic still runs (legacy
+    // path for adopted/orphan positions). Tests that specifically
+    // exercise bracketed-exit semantics override this with non-empty
+    // leg ids.
+    mockOrderService.submitBracketOrder.mockResolvedValue({
+      entry: { id: 'order-1', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+      target: { id: '', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+      stop: { id: '', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+    });
     service = new ExecutionService();
   });
 
@@ -100,8 +113,16 @@ describe('ExecutionService', () => {
 
       await service.onPriceCycle(candidates, stocks);
 
-      expect(mockOrderService.submitOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ symbol: 'AGAE', side: 'buy', qty: 100 }),
+      // Phase 2: entries go through submitBracketOrder (entry+target+stop
+      // OCO group at the broker), not the old single submitOrder path.
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          symbol: 'AGAE',
+          side: 'buy',
+          qty: 100,
+          targetPrice: 0.94,
+          stopPrice: 0.30,
+        }),
       );
       expect(service.getActiveTrades()).toHaveLength(1);
       expect(service.getActiveTrades()[0].symbol).toBe('AGAE');
@@ -137,7 +158,7 @@ describe('ExecutionService', () => {
       const stocks = [makeStockState('AGAE', 0.50)];
       await service.onPriceCycle(candidates, stocks);
       await service.onPriceCycle(candidates, stocks);
-      expect(mockOrderService.submitOrder).toHaveBeenCalledTimes(1);
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalledTimes(1);
     });
 
     it('does not place new entries while paused', async () => {
@@ -147,6 +168,61 @@ describe('ExecutionService', () => {
 
       expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
       expect(service.getActiveTrades()).toHaveLength(0);
+    });
+  });
+
+  describe('bracket exit semantics', () => {
+    // Phase 2: when a trade has bracket leg ids set (target/stop sitting
+    // at the broker as an OCO pair), the polling loop must NOT issue
+    // closePosition on price-trigger — that would race with the
+    // broker's leg and double-sell. These tests pin that contract.
+    beforeEach(() => {
+      // Override the default mock with NON-empty leg ids so the
+      // resulting ActiveTrade exercises the bracketed path.
+      mockOrderService.submitBracketOrder.mockResolvedValue({
+        entry: { id: 'order-1', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+        target: { id: 'order-1-target', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+        stop: { id: 'order-1-stop', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+      });
+    });
+
+    it('does NOT call closePosition when price hits the in-memory stop on a bracketed trade', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      // Simulate fill
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Price drops below the initial stop — broker handles via the
+      // stop leg, bot must stay out of it.
+      mockOrderService.closePosition.mockClear();
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.40)]);
+      expect(mockOrderService.closePosition).not.toHaveBeenCalled();
+      // Trade is still tracked because the broker fill hasn't been
+      // observed yet (would surface on a later getOrder poll).
+      expect(service.getActiveTrades().filter((t) => t.symbol === 'AGAE')).toHaveLength(1);
+    });
+
+    it('cancels target+stop legs before issuing a kill-switch close', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.cancelOrder.mockResolvedValue(undefined);
+      mockOrderService.closePosition.mockResolvedValue(undefined);
+
+      await service.flattenAll('eod');
+
+      // Both legs must have been cancelled BEFORE closePosition fires
+      // — otherwise the broker can fire the leg after the close fills,
+      // leaving us short the position.
+      const cancelCalls = mockOrderService.cancelOrder.mock.calls;
+      const cancelledIds = cancelCalls.map((c) => c[0]);
+      expect(cancelledIds).toContain('order-1-target');
+      expect(cancelledIds).toContain('order-1-stop');
+      expect(mockOrderService.closePosition).toHaveBeenCalledWith('AGAE');
     });
   });
 
@@ -469,7 +545,7 @@ describe('ExecutionService', () => {
       candidate.snapshot.buyZonePrice = 0.50;
 
       await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
-      expect(mockOrderService.submitOrder).toHaveBeenCalled();
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalled();
     });
 
     it('does not apply wash-sale bar to symbols not recently traded', async () => {
@@ -479,7 +555,7 @@ describe('ExecutionService', () => {
       candidate.snapshot.buyZonePrice = 0.50;
 
       await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
-      expect(mockOrderService.submitOrder).toHaveBeenCalled();
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalled();
     });
   });
 

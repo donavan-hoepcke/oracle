@@ -75,7 +75,7 @@ describe('applyFillsToLedger', () => {
       [trade()],
       [
         sellFill({ id: 'b1', side: 'buy' }),
-        sellFill({ id: 'b2', status: 'canceled' }),
+        sellFill({ id: 'b2', status: 'cancelled' }),
         sellFill({ id: 'b3', symbol: 'BBB' }),
         sellFill({ id: 'b4', filledQty: 50 }),
       ],

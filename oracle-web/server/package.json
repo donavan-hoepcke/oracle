@@ -19,6 +19,7 @@
     "express": "^4.21.2",
     "finnhub": "^1.2.18",
     "playwright": "^1.52.0",
+    "undici": "^7.25.0",
     "ws": "^8.18.0",
     "yahoo-finance2": "^2.13.3",
     "yaml": "^2.8.3",

@@ -202,6 +202,32 @@ const configSchema = z.object({
           cash_account: z.boolean().default(false),
         })
         .default({}),
+      ibkr: z
+        .object({
+          /** Base URL of the local Client Portal Gateway. Default matches
+           *  IBKR's documented localhost-listening port for the gateway. */
+          base_url: z.string().default('https://localhost:5000/v1/api'),
+          /** IBKR account ID, e.g. "DU1234567" (paper) or "U1234567" (live).
+           *  Read from APCA_AI_KEY_ID-style env var rather than committed
+           *  config — left empty here so misconfiguration is loud. */
+          account_id: z.string().default(''),
+          /** Cash vs margin. Set true for a real cash account so settled-cash
+           *  sizing kicks in (Phase 3). */
+          cash_account: z.boolean().default(true),
+          /** Tickle interval. The gateway tears the session down after
+           *  ~1 minute of silence. */
+          poll_session_keepalive_sec: z.number().positive().default(60),
+          /** Where to persist the symbol → conid cache. Lazy-resolved on
+           *  first lookup; survives process restarts. */
+          conid_cache_path: z.string().default('.ibkr-state/conid-cache.json'),
+          /** When the gateway uses self-signed TLS (the default for local
+           *  installs), Node's built-in fetch (undici) refuses to connect.
+           *  Setting this true installs a permissive Agent dispatcher; use
+           *  it ONLY for the local-gateway case. Production deployments
+           *  behind a real TLS frontend should leave this false. */
+          allow_self_signed_tls: z.boolean().default(true),
+        })
+        .default({}),
     })
     .default({}),
   recording: z

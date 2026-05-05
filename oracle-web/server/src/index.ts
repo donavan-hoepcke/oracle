@@ -692,6 +692,35 @@ floatMapService.start().catch((err) => {
   console.warn('floatMap start failed:', err instanceof Error ? err.message : err);
 });
 
+// Initialize the active broker adapter. The Alpaca adapter is stateless
+// and `init()` is a no-op there; the IBKR adapter uses init() to start
+// the session keepalive tickle, load the conid cache, and resolve the
+// TLS dispatcher.
+//
+// We block server bootstrap on init so the keepalive is firing and the
+// cache is warm before the price loop's first tick. A previous version
+// fired this in a non-awaited IIFE which raced with first request — the
+// IBKR adapter would either return 401 (no session yet) or do a cold
+// conid lookup on the hot path.
+{
+  const { brokerService } = await import('./services/brokers/index.js');
+  const adapter = brokerService as { init?: () => Promise<void> };
+  if (typeof adapter.init === 'function') {
+    try {
+      await adapter.init();
+    } catch (err) {
+      // init() is best-effort. A failure here means the broker is not
+      // reachable at startup — log and continue so the rest of the
+      // server still serves the dashboard / journal endpoints. Order
+      // submission will surface the underlying error when attempted.
+      console.warn(
+        `${brokerService.name} adapter init failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}
+
 // Start sector-hotness polling (Alpaca ETF bars; no-op when disabled).
 sectorHotnessService.start().catch((err) => {
   console.warn('sectorHotness start failed:', err instanceof Error ? err.message : err);

@@ -17,6 +17,16 @@ export interface ActiveTrade {
   target: number;
   riskPerShare: number;
   orderId: string;
+  /**
+   * Broker handles for the bracket exit legs. When the entry is submitted
+   * via `submitBracketOrder`, these are populated and the broker manages
+   * exits server-side as an OCO pair — when one fills the other auto-
+   * cancels. tighten_stop replaces stopOrderId in-place; on legacy
+   * non-bracketed entries these are null and the bot manages exits in
+   * the polling loop instead.
+   */
+  targetOrderId: string | null;
+  stopOrderId: string | null;
   status: 'pending' | 'filled' | 'exiting';
   trailingState: 'initial' | 'mfe_lock' | 'breakeven' | 'trailing';
   // Max favorable R-multiple observed since entry. Drives the give-back stop
@@ -331,6 +341,12 @@ export class ExecutionService {
         target,
         riskPerShare,
         orderId: '',
+        // Adopted orphans don't have known bracket-leg ids — bot manages
+        // exits in the polling loop instead. Future: attempt to find
+        // existing target/stop orders for this symbol via getOpenOrders
+        // and adopt them too.
+        targetOrderId: null,
+        stopOrderId: null,
         status: 'filled',
         trailingState: 'initial',
         maxFavorableR: currentR,
@@ -499,25 +515,22 @@ export class ExecutionService {
 
       const useLimit =
         candidate.setup === 'red_candle_theory' || candidate.setup === 'momentum_continuation';
-      // SubmitOrderParams is a discriminated union — limitPrice is required
-      // for limit orders and not allowed on market orders, so we branch.
-      const orderParams = useLimit
-        ? {
-            symbol: candidate.symbol,
-            qty: size.shares,
-            side: 'buy' as const,
-            type: 'limit' as const,
-            limitPrice: candidate.suggestedEntry,
-          }
-        : {
-            symbol: candidate.symbol,
-            qty: size.shares,
-            side: 'buy' as const,
-            type: 'market' as const,
-          };
 
       try {
-        const order = await brokerService.submitOrder(orderParams);
+        // Bracket order: entry + target (limit-sell at suggestedTarget) +
+        // stop (stop-sell at suggestedStop). Submitted atomically — if a
+        // crash interrupts the bot after entry, the broker still has the
+        // OCO exit pair queued. tighten_stop later replaces just the
+        // stop leg via stopOrderId.
+        const bracket = await brokerService.submitBracketOrder({
+          symbol: candidate.symbol,
+          qty: size.shares,
+          side: 'buy',
+          type: useLimit ? 'limit' : 'market',
+          entryLimitPrice: useLimit ? candidate.suggestedEntry : undefined,
+          targetPrice: candidate.suggestedTarget,
+          stopPrice: candidate.suggestedStop,
+        });
 
         this.activeTrades.push({
           symbol: candidate.symbol,
@@ -529,7 +542,9 @@ export class ExecutionService {
           currentStop: candidate.suggestedStop,
           target: candidate.suggestedTarget,
           riskPerShare: candidate.suggestedEntry - candidate.suggestedStop,
-          orderId: order.id,
+          orderId: bracket.entry.id,
+          targetOrderId: bracket.target.id,
+          stopOrderId: bracket.stop.id,
           status: 'pending',
           trailingState: 'initial',
           maxFavorableR: 0,
@@ -551,12 +566,17 @@ export class ExecutionService {
       if (trade.status !== 'pending') continue;
       try {
         const order = await brokerService.getOrder(trade.orderId);
-        if (order.status === 'filled') {
+        // Treat 'partial' the same as 'filled' for the pending→filled
+        // transition: any qty actually filled means the bot is now long
+        // and needs to manage the position. The remaining quantity may
+        // still fill on subsequent polls — `shares` tracks the actual
+        // filled amount, so trailing-stop math uses the right size.
+        if (order.status === 'filled' || order.status === 'partial') {
           trade.status = 'filled';
           if (order.filledAvgPrice) trade.entryPrice = order.filledAvgPrice;
           if (order.filledQty) trade.shares = order.filledQty;
           trade.riskPerShare = trade.entryPrice - trade.initialStop;
-        } else if (order.status === 'canceled' || order.status === 'expired' || order.status === 'rejected') {
+        } else if (order.status === 'cancelled' || order.status === 'expired' || order.status === 'rejected') {
           this.activeTrades = this.activeTrades.filter(t => t !== trade);
         }
       } catch {
@@ -605,21 +625,34 @@ export class ExecutionService {
       const currentPrice = priceMap.get(trade.symbol);
       if (currentPrice === null || currentPrice === undefined) continue;
 
-      // Check stop
-      if (currentPrice <= trade.currentStop) {
-        const reason = trade.trailingState !== 'initial' ? 'trailing_stop' : 'stop';
-        const detail = reason === 'trailing_stop'
-          ? `Price ${currentPrice.toFixed(3)} crossed trailing stop ${trade.currentStop.toFixed(3)} (state=${trade.trailingState})`
-          : `Price ${currentPrice.toFixed(3)} crossed initial stop ${trade.currentStop.toFixed(3)}`;
-        await this.exitTrade(trade, currentPrice, reason, detail);
-        continue;
-      }
-
-      // Check target
-      if (currentPrice >= trade.target) {
-        const detail = `Price ${currentPrice.toFixed(3)} reached target ${trade.target.toFixed(3)}`;
-        await this.exitTrade(trade, currentPrice, 'target', detail);
-        continue;
+      // Bracketed trades: the broker holds an OCO exit pair (target +
+      // stop) server-side. The bot must NOT also issue a closePosition
+      // when price triggers — that would race with the broker's leg
+      // and could result in two sells (the bot's market order plus the
+      // broker's limit/stop fill). Trust the broker for terminal exits;
+      // the bot still manages trailing-stop ratcheting (see below) by
+      // replacing the broker's stop leg in place.
+      // Empty-string ids count as "no bracket leg" the same as null —
+      // adopted positions and synthesized fixtures both use that
+      // sentinel.
+      const isBracketed = !!trade.stopOrderId;
+      if (!isBracketed) {
+        // Legacy path: no broker-side legs (e.g. adopted orphan
+        // positions, or pre-Phase-2 trades). The bot owns exit
+        // execution.
+        if (currentPrice <= trade.currentStop) {
+          const reason = trade.trailingState !== 'initial' ? 'trailing_stop' : 'stop';
+          const detail = reason === 'trailing_stop'
+            ? `Price ${currentPrice.toFixed(3)} crossed trailing stop ${trade.currentStop.toFixed(3)} (state=${trade.trailingState})`
+            : `Price ${currentPrice.toFixed(3)} crossed initial stop ${trade.currentStop.toFixed(3)}`;
+          await this.exitTrade(trade, currentPrice, reason, detail);
+          continue;
+        }
+        if (currentPrice >= trade.target) {
+          const detail = `Price ${currentPrice.toFixed(3)} reached target ${trade.target.toFixed(3)}`;
+          await this.exitTrade(trade, currentPrice, 'target', detail);
+          continue;
+        }
       }
 
       // Update trailing stop
@@ -644,6 +677,7 @@ export class ExecutionService {
         }
       }
 
+      const stopBefore = trade.currentStop;
       if (rMultiple >= exec.trailing_start_r) {
         const newStop = currentPrice - exec.trailing_distance_r * trade.riskPerShare;
         trade.currentStop = Math.max(trade.currentStop, newStop);
@@ -658,6 +692,24 @@ export class ExecutionService {
           trade.trailingState = 'breakeven';
         }
       }
+
+      // KNOWN GAP: when `currentStop` advances on a BRACKETED trade, we
+      // currently only update the in-memory value — the broker-side
+      // stop leg stays at its initial price. So trailing-stop "ratchets
+      // up" only inform the dashboard, not the broker. The broker still
+      // protects the trade at the initial stop (good, that's the whole
+      // point of bracket orders), but profit-locking on winners is
+      // disabled until BrokerAdapter.replaceStopLeg() is implemented in
+      // a follow-up PR. Log once per trade per ratchet event so the
+      // operator can see the divergence.
+      if (isBracketed && trade.currentStop > stopBefore) {
+        console.warn(
+          `[bracket trailing] ${trade.symbol}: in-memory stop ratcheted ` +
+            `${stopBefore.toFixed(3)} → ${trade.currentStop.toFixed(3)} but broker leg ` +
+            `${trade.stopOrderId} still at the entry-time stop. Trailing-stop replacement ` +
+            `is a TODO — see executionService.manageFilled().`,
+        );
+      }
     }
   }
 
@@ -670,6 +722,34 @@ export class ExecutionService {
     const previousStatus = trade.status;
     trade.status = 'exiting';
     try {
+      // Bracketed trades have target+stop legs sitting at the broker as
+      // an OCO pair. closePosition submits a market sell, which would
+      // cross the bracket — but until those legs see the position go
+      // to 0, the broker can still fire one of them. Cancel both legs
+      // FIRST so the close is the only sell in flight; otherwise we
+      // can end up short the position when the bracket fires after the
+      // close already filled. Best-effort: cancel failures (legs
+      // already filled, already cancelled) are logged and ignored.
+      // truthy guard catches both null and the empty-string sentinel
+      // used by adopted-position fixtures.
+      const targetId = trade.targetOrderId;
+      if (targetId) {
+        await brokerService.cancelOrder(targetId).catch((e) => {
+          console.warn(
+            `[exit] failed to cancel target leg ${targetId} for ` +
+              `${trade.symbol}: ${e instanceof Error ? e.message : e}`,
+          );
+        });
+      }
+      const stopId = trade.stopOrderId;
+      if (stopId) {
+        await brokerService.cancelOrder(stopId).catch((e) => {
+          console.warn(
+            `[exit] failed to cancel stop leg ${stopId} for ` +
+              `${trade.symbol}: ${e instanceof Error ? e.message : e}`,
+          );
+        });
+      }
       await brokerService.closePosition(trade.symbol);
     } catch (err) {
       // The broker rejected the close (e.g. PDT cap, position locked, market closed

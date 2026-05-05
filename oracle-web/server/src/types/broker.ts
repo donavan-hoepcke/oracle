@@ -32,21 +32,39 @@ export interface BrokerPosition {
   unrealizedPl: number;
 }
 
+/**
+ * Broker-neutral order status. Each adapter normalizes its broker-native
+ * status (Alpaca's 'accepted'|'new'|'pending_new'|'partially_filled'|...,
+ * IBKR's 'Submitted'|'PreSubmitted'|'Filled'|...) into one of these values.
+ *
+ * The set is intentionally small. Adapters that see a status they don't
+ * recognize map it to 'pending' (most conservative — caller will keep
+ * polling) and emit a warning so we can extend the mapping.
+ */
+export type BrokerOrderStatus =
+  | 'pending'    // submitted, broker has not yet acknowledged
+  | 'accepted'   // broker has the order in its book, not yet filled
+  | 'partial'    // partially filled
+  | 'filled'     // fully filled
+  | 'cancelled'  // cancelled by us or by the broker
+  | 'rejected'   // broker rejected outright (PDT, insufficient funds, etc.)
+  | 'expired';   // tif expired
+
 export interface BrokerOrder {
   id: string;
   symbol: string;
-  /**
-   * Broker-native status string. Kept untyped in Phase 1 so we don't
-   * silently change executionService's status comparisons (e.g.
-   * order.status === 'filled'). Phase 2 introduces a normalized enum
-   * alongside this raw string.
-   */
-  status: string;
+  status: BrokerOrderStatus;
   side: 'buy' | 'sell';
   filledAvgPrice: number | null;
   filledQty: number | null;
   filledAt: string | null;
   submittedAt: string | null;
+  /**
+   * Broker-native status string for log/debug only. Useful when an order
+   * stalls in an unexpected state — log lines should include rawStatus
+   * so we can grep upstream. Never used for control flow.
+   */
+  rawStatus?: string;
 }
 
 /**
@@ -70,6 +88,46 @@ export type SubmitOrderParams =
       limitPrice: number;
     };
 
+/**
+ * A bracketed entry: an entry order plus a take-profit (limit-sell) target
+ * and a stop-loss, all submitted atomically. When the entry fills, the
+ * target and stop become an OCO pair — whichever fills first cancels the
+ * other server-side.
+ *
+ * Why this exists: without it, exits are managed entirely in-process. A
+ * bot crash after entry leaves you exposed with an open position and no
+ * pending exit. Bracket orders push exit management into the broker so a
+ * crashed/restarting bot still gets out at a sane price.
+ *
+ * Notes on partial fills (decided 2026-05-04): we always bracket the
+ * original `qty`. The broker handles partial-fill semantics at exit time
+ * — when the stop or target fires, it sells whatever quantity actually
+ * ended up filled.
+ */
+export interface SubmitBracketOrderParams {
+  symbol: string;
+  qty: number;
+  /** Side of the ENTRY order. Target+stop are inferred (opposite). v1
+   *  only supports long entries; short entries can be added later. */
+  side: 'buy';
+  /** Entry order type. Limit entries require entryLimitPrice. */
+  type: 'market' | 'limit';
+  entryLimitPrice?: number;
+  /** Take-profit price for the limit-sell target leg. */
+  targetPrice: number;
+  /** Stop-loss trigger for the stop-sell leg. */
+  stopPrice: number;
+}
+
+export interface BracketOrderResult {
+  /** The entry order. status field reflects its current broker state. */
+  entry: BrokerOrder;
+  /** The take-profit limit-sell. Becomes active when entry fills. */
+  target: BrokerOrder;
+  /** The stop-loss. Becomes active when entry fills. */
+  stop: BrokerOrder;
+}
+
 export type OrderStatusFilter = 'all' | 'closed' | 'open';
 
 export interface BrokerAdapter {
@@ -88,6 +146,17 @@ export interface BrokerAdapter {
    */
   getOrdersSince(sinceIso: string, status?: OrderStatusFilter): Promise<BrokerOrder[]>;
   submitOrder(params: SubmitOrderParams): Promise<BrokerOrder>;
+  /**
+   * Submit a bracket order: entry + target (take-profit limit-sell) +
+   * stop (stop-loss). The target and stop are linked OCO at the broker
+   * — when one fills, the other is cancelled server-side.
+   *
+   * Returns the three constituent orders. The entry's id is the trade
+   * handle for status-checking; target.id and stop.id are the handles
+   * for replacing/cancelling those legs (e.g. tighten_stop replaces the
+   * stop leg in-place).
+   */
+  submitBracketOrder(params: SubmitBracketOrderParams): Promise<BracketOrderResult>;
   getOrder(id: string): Promise<BrokerOrder>;
   cancelOrder(id: string): Promise<void>;
   closePosition(symbol: string): Promise<void>;

@@ -132,6 +132,12 @@ describe('buildSymbolDetail', () => {
       target: 1.3,
       riskPerShare: 0.1,
       orderId: 'ord-1',
+      // Bracket-order leg handles. Phase 2 entries go through
+      // submitBracketOrder so target+stop are managed server-side as OCO;
+      // tests fix concrete ids so a future change that uses them still
+      // type-checks against this fixture.
+      targetOrderId: 'ord-1-target',
+      stopOrderId: 'ord-1-stop',
       status: 'filled',
       trailingState: 'mfe_lock',
       maxFavorableR: 0.6,
