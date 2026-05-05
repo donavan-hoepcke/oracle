@@ -59,6 +59,14 @@ bot:
     url: "https://university.stockstotrade.com/room/daily-income-trader-chat"
     poll_interval_sec: 60
     hydration_wait_ms: 5000
+  # Authors whose chat messages we ALSO try to parse as moderator alerts
+  # when the body is alert-shaped (Signal:/Risk Zone:/Target:). STT-Shirley
+  # posts Double Downs only in chat; without this allowlist, those alerts
+  # never surface as structured mod_alert events.
+  moderatorChatAllowlist:
+    - "STT- Shirley"
+    - "STT-Shirley"
+    - "Tim Bohen"
 execution:
   enabled: true
   paper: true
