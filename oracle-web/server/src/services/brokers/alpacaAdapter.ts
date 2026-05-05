@@ -159,11 +159,57 @@ export class AlpacaAdapter implements BrokerAdapter {
   }
 }
 
+/**
+ * Map Alpaca's order status string to our normalized BrokerOrderStatus enum.
+ * Per Alpaca docs the full set is:
+ *   new, accepted, pending_new, accepted_for_bidding, stopped, rejected,
+ *   suspended, calculated, partially_filled, filled, done_for_day, canceled,
+ *   expired, replaced, pending_cancel, pending_replace
+ *
+ * We collapse this into 7 broker-neutral states. Anything we don't
+ * recognize maps to 'pending' (safest — caller keeps polling) and is
+ * warned so we can extend the mapping if Alpaca introduces a new state.
+ */
+function normalizeAlpacaStatus(
+  raw: string,
+): import('../../types/broker.js').BrokerOrderStatus {
+  switch (raw) {
+    case 'new':
+    case 'pending_new':
+    case 'pending_replace':
+    case 'pending_cancel':
+    case 'replaced':
+    case 'accepted_for_bidding':
+    case 'suspended':
+    case 'calculated':
+    case 'stopped':
+    case 'done_for_day':
+      return 'pending';
+    case 'accepted':
+      return 'accepted';
+    case 'partially_filled':
+      return 'partial';
+    case 'filled':
+      return 'filled';
+    case 'canceled':
+      return 'cancelled';
+    case 'rejected':
+      return 'rejected';
+    case 'expired':
+      return 'expired';
+    default:
+      console.warn(`[AlpacaAdapter] unknown order status "${raw}" — mapping to 'pending'`);
+      return 'pending';
+  }
+}
+
 function mapOrder(data: Record<string, unknown>): BrokerOrder {
+  const rawStatus = data.status as string;
   return {
     id: data.id as string,
     symbol: data.symbol as string,
-    status: data.status as string,
+    status: normalizeAlpacaStatus(rawStatus),
+    rawStatus,
     side: data.side === 'sell' ? 'sell' : 'buy',
     filledAvgPrice: data.filled_avg_price
       ? parseFloat(data.filled_avg_price as string)

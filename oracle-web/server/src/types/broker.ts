@@ -32,21 +32,39 @@ export interface BrokerPosition {
   unrealizedPl: number;
 }
 
+/**
+ * Broker-neutral order status. Each adapter normalizes its broker-native
+ * status (Alpaca's 'accepted'|'new'|'pending_new'|'partially_filled'|...,
+ * IBKR's 'Submitted'|'PreSubmitted'|'Filled'|...) into one of these values.
+ *
+ * The set is intentionally small. Adapters that see a status they don't
+ * recognize map it to 'pending' (most conservative — caller will keep
+ * polling) and emit a warning so we can extend the mapping.
+ */
+export type BrokerOrderStatus =
+  | 'pending'    // submitted, broker has not yet acknowledged
+  | 'accepted'   // broker has the order in its book, not yet filled
+  | 'partial'    // partially filled
+  | 'filled'     // fully filled
+  | 'cancelled'  // cancelled by us or by the broker
+  | 'rejected'   // broker rejected outright (PDT, insufficient funds, etc.)
+  | 'expired';   // tif expired
+
 export interface BrokerOrder {
   id: string;
   symbol: string;
-  /**
-   * Broker-native status string. Kept untyped in Phase 1 so we don't
-   * silently change executionService's status comparisons (e.g.
-   * order.status === 'filled'). Phase 2 introduces a normalized enum
-   * alongside this raw string.
-   */
-  status: string;
+  status: BrokerOrderStatus;
   side: 'buy' | 'sell';
   filledAvgPrice: number | null;
   filledQty: number | null;
   filledAt: string | null;
   submittedAt: string | null;
+  /**
+   * Broker-native status string for log/debug only. Useful when an order
+   * stalls in an unexpected state — log lines should include rawStatus
+   * so we can grep upstream. Never used for control flow.
+   */
+  rawStatus?: string;
 }
 
 /**

@@ -556,7 +556,7 @@ export class ExecutionService {
           if (order.filledAvgPrice) trade.entryPrice = order.filledAvgPrice;
           if (order.filledQty) trade.shares = order.filledQty;
           trade.riskPerShare = trade.entryPrice - trade.initialStop;
-        } else if (order.status === 'canceled' || order.status === 'expired' || order.status === 'rejected') {
+        } else if (order.status === 'cancelled' || order.status === 'expired' || order.status === 'rejected') {
           this.activeTrades = this.activeTrades.filter(t => t !== trade);
         }
       } catch {
