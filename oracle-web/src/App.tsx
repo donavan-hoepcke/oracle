@@ -2,6 +2,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useSignals } from './hooks/useSignals';
 import { useJournal } from './hooks/useJournal';
 import { useScanner } from './hooks/useScanner';
+import { useOpsHealth } from './hooks/useOpsHealth';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { StatusBar } from './components/StatusBar';
 import { ScannerPage } from './components/ScannerPage';
@@ -37,6 +38,7 @@ function App() {
     error: scannerError,
     refresh: scannerRefresh,
   } = useScanner();
+  const { snapshot: opsHealth } = useOpsHealth();
 
   const startScraper = async () => {
     try {
@@ -138,6 +140,7 @@ function App() {
         isConnected={isConnected}
         lastUpdate={lastUpdate}
         stockCount={stocks.length}
+        opsHealth={opsHealth}
       />
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
