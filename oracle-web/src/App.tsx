@@ -9,6 +9,7 @@ import { ScannerPage } from './components/ScannerPage';
 import { SignalsPage } from './components/SignalsPage';
 import { JournalPage } from './components/JournalPage';
 import { BacktestPage } from './components/BacktestPage';
+import { HealthPage } from './components/HealthPage';
 import { SymbolDetailPage } from './components/SymbolDetailPage';
 import { PremarketSyncBanner } from './components/PremarketSyncBanner';
 
@@ -129,6 +130,12 @@ function App() {
               className={navLinkClass}
             >
               Backtest
+            </NavLink>
+            <NavLink
+              to="/health"
+              className={navLinkClass}
+            >
+              Health
             </NavLink>
           </nav>
         </div>
@@ -261,6 +268,7 @@ function App() {
             }
           />
           <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/health" element={<HealthPage />} />
           <Route path="/symbol/:ticker" element={<SymbolDetailPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
