@@ -339,10 +339,22 @@ export class IbkrAdapter implements BrokerAdapter {
     const submitted = finalReplies.find(
       (r) => (r as IbkrSubmitResult).order_id || (r as IbkrSubmitResult).orderId,
     ) as IbkrSubmitResult | undefined;
+    if (!submitted) {
+      // IBKR can return a 200 with a reply payload that lacks order_id —
+      // typically a post-confirmation rejection ("price too far from
+      // market", etc.). Without an explicit order id we have no
+      // assurance the modification took effect; treating it as success
+      // would silently leave the stop at its old level. Throw so the
+      // caller (executionService) logs and retries next cycle.
+      throw new Error(
+        `IBKR replaceStopLeg: no order_id in final reply set ` +
+          `(${JSON.stringify(finalReplies).slice(0, 400)})`,
+      );
+    }
     // IBKR's modification path may echo back a new id (some gateway
     // versions cancel+resubmit internally), or the same id on
-    // in-place modify. Prefer the echoed id; fall back to the input.
-    return String(submitted?.order_id ?? submitted?.orderId ?? stopOrderId);
+    // in-place modify.
+    return String(submitted.order_id ?? submitted.orderId ?? stopOrderId);
   }
 
   async cancelOrder(id: string): Promise<void> {

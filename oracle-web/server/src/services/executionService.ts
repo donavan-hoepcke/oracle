@@ -682,12 +682,6 @@ export class ExecutionService {
       // the peak, not the current price.
       if (rMultiple > trade.maxFavorableR) trade.maxFavorableR = rMultiple;
 
-      // Capture stop BEFORE any of the trailing tiers fire. Both MFE-lock
-      // and trailing_start_r can bump currentStop; we want the broker-leg
-      // replacement (further down) to fire when EITHER advances the stop.
-      // Capturing after the MFE lock would miss MFE-only ratchets.
-      const stopBefore = trade.currentStop;
-
       // MFE give-back lock: once the trade has printed at least
       // trailing_mfe_activate_r of unrealized gain, pull the stop up so we
       // give back at most trailing_mfe_giveback_pct of the peak. This fires
@@ -723,10 +717,17 @@ export class ExecutionService {
       // will retry the replacement, and worst case the bot's view of
       // its risk is tighter than the broker's (graceful degradation,
       // not double exposure).
+      //
+      // The retry-friendly gate is `currentStop > lastBrokerStop`
+      // alone — NOT `currentStop > stopBefore`. After a failed
+      // replaceStopLeg the in-cycle ratchet already happened on a
+      // prior tick; stopBefore on this tick equals currentStop, so a
+      // stopBefore-based gate would skip the retry forever. The
+      // lastBrokerStop comparison correctly identifies "broker doesn't
+      // have the latest stop yet" without needing same-cycle motion.
       if (
         isBracketed &&
         trade.stopOrderId &&
-        trade.currentStop > stopBefore &&
         trade.currentStop > trade.lastBrokerStop
       ) {
         const stopId = trade.stopOrderId;

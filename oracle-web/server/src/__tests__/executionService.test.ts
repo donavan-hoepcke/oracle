@@ -232,6 +232,31 @@ describe('ExecutionService', () => {
       expect(trade?.stopOrderId).toBe('order-1-stop-v2');
     });
 
+    it('Phase 2.5: retries replaceStopLeg next cycle if a previous attempt failed', async () => {
+      // Regression: the first version of the gate combined
+      // currentStop > stopBefore AND currentStop > lastBrokerStop. The
+      // first clause is only true on the SAME cycle the in-memory
+      // ratchet happens — so a transient broker rejection on cycle N
+      // would leave the broker stuck at the old level forever, since
+      // cycle N+1 sees currentStop == stopBefore. Fix: gate on
+      // lastBrokerStop alone.
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Cycle N: ratchet fires + broker rejects.
+      mockOrderService.replaceStopLeg.mockRejectedValueOnce(new Error('temporary 503'));
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.60)]);
+      expect(mockOrderService.replaceStopLeg).toHaveBeenCalledTimes(1);
+
+      // Cycle N+1: SAME price, no new in-memory ratchet, but the
+      // broker is still behind — must retry.
+      mockOrderService.replaceStopLeg.mockResolvedValue('order-1-stop-v2');
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.60)]);
+      expect(mockOrderService.replaceStopLeg).toHaveBeenCalledTimes(2);
+    });
+
     it('Phase 2.5: skips replaceStopLeg when in-memory stop did not advance past lastBrokerStop', async () => {
       // Idempotency guard: if the previous cycle already pushed the
       // current stop level to the broker, the next cycle should not
