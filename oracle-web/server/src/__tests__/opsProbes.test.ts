@@ -43,6 +43,43 @@ describe('probeOracleScraper', () => {
   });
 });
 
+describe('probeOracleScraper edge cases', () => {
+  it('returns unknown when botStatus is null', async () => {
+    const r = await probeOracleScraper(deps({ botStatus: null }));
+    expect(r.status).toBe('unknown');
+    expect(r.message).toMatch(/not available/i);
+  });
+
+  it('returns red when lastSync has never happened', async () => {
+    const r = await probeOracleScraper(deps({ botStatus: { isRunning: true, lastSync: null, symbolCount: 0, lastError: null } }));
+    expect(r.status).toBe('red');
+    expect(r.message).toMatch(/never synced/i);
+  });
+});
+
+describe('probeWsClients', () => {
+  it('always returns ok regardless of client count', async () => {
+    const zero = await probeWsClients(deps({ wsClientCount: 0 }));
+    const many = await probeWsClients(deps({ wsClientCount: 5 }));
+    expect(zero.status).toBe('ok');
+    expect(many.status).toBe('ok');
+  });
+
+  it('uses singular "client" for count=1 and plural otherwise', async () => {
+    const one = await probeWsClients(deps({ wsClientCount: 1 }));
+    const two = await probeWsClients(deps({ wsClientCount: 2 }));
+    expect(one.message).toMatch(/\b1 client\b/);
+    expect(two.message).toMatch(/\b2 clients\b/);
+  });
+});
+
+describe('probeBrokerAccount default failures', () => {
+  it('treats omitted failures arg as warn on first failure', async () => {
+    const r = await probeBrokerAccount({ getAccount: async () => { throw new Error('500'); } });
+    expect(r.status).toBe('warn');
+  });
+});
+
 function snap(opts: { fetchedAt: string | null; error: string | null }) {
   return { fetchedAt: opts.fetchedAt, error: opts.error };
 }
@@ -121,6 +158,11 @@ describe('active probes', () => {
   it('recording_disk red when dir not writable', async () => {
     const r = await probeRecordingDisk({ availableBytes: 999_999_999_999, dirWritable: false });
     expect(r.status).toBe('red');
+  });
+
+  it('recording_disk unknown when availableBytes is -1 (statfsSync unavailable)', async () => {
+    const r = await probeRecordingDisk({ availableBytes: -1, dirWritable: true });
+    expect(r.status).toBe('unknown');
   });
 
   it('polygon_api ok when fewer than 5 of last 10 calls failed', async () => {

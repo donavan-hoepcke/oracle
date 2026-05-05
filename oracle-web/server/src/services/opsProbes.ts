@@ -1,5 +1,5 @@
-import { existsSync, statSync, accessSync, constants } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, accessSync, constants } from 'node:fs';
+import * as fsMod from 'node:fs';
 import type { ProbeName, ProbeResult } from '../types/opsHealth.js';
 
 export interface BotStatusLike {
@@ -117,6 +117,9 @@ export interface DiskProbeDeps {
 
 export async function probeRecordingDisk(deps: DiskProbeDeps): Promise<ProbeResult> {
   if (!deps.dirWritable) return red('recording_disk', 'recording dir not writable');
+  if (deps.availableBytes < 0) {
+    return resultOf('recording_disk', 'unknown', 'free-space probe unavailable on this platform');
+  }
   if (deps.availableBytes < 1024 ** 3) {
     return red('recording_disk', `low disk space (${(deps.availableBytes / 1024 ** 3).toFixed(2)} GB free)`);
   }
@@ -161,17 +164,18 @@ export function inspectRecordingDir(dir: string): DiskProbeDeps {
     dirWritable = false;
   }
   let availableBytes = Number.MAX_SAFE_INTEGER;
-  try {
-    const fs = require('node:fs') as typeof import('node:fs');
-    if (typeof (fs as unknown as { statfsSync?: unknown }).statfsSync === 'function') {
-      const st = (fs as unknown as { statfsSync: (p: string) => { bavail: bigint; bsize: bigint } }).statfsSync(dir);
+  const statfsSync = (fsMod as { statfsSync?: (p: string) => { bavail: bigint; bsize: bigint } }).statfsSync;
+  if (typeof statfsSync === 'function') {
+    try {
+      const st = statfsSync(dir);
       availableBytes = Number(BigInt(st.bavail) * BigInt(st.bsize));
+    } catch {
+      // statfsSync exists but threw — fall through to fallback handling below
+      availableBytes = -1;
     }
-  } catch {
-    // best effort — leave at MAX so probe stays ok
+  } else {
+    availableBytes = -1;
   }
-  void statSync;
-  void resolve;
   return { availableBytes, dirWritable };
 }
 
