@@ -433,6 +433,11 @@ export class ExecutionService {
       deployedCapital,
       dailyRealizedPnl: this.getDailyPnl(),
       dailyUnrealizedPnl: unrealizedPnl,
+      // Phase 3: surface settled-cash and cash-account flag so tradeFilterService
+      // can avoid free-riding violations on cash accounts. Margin adapters set
+      // settledCash === cash and isCashAccount === false, preserving prior sizing.
+      settledCash: account.settledCash,
+      isCashAccount: brokerService.isCashAccount,
     };
   }
 
