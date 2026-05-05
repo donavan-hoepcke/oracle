@@ -5,7 +5,7 @@ vi.mock('../config.js', () => ({
     bot: {
       moderatorAlerts: {
         enabled: false,
-        url: '',
+        urls: [],
         poll_interval_sec: 120,
         hydration_wait_ms: 0,
       },

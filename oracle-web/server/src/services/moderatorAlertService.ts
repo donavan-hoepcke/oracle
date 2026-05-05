@@ -316,18 +316,37 @@ export class ModeratorAlertService {
     if (this.inFlight) return;
     this.inFlight = true;
     try {
-      const text = await this.fetchPageText();
-      const posts = parseModeratorAlertText(text);
-      this.ingestPosts(posts);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.snapshot = { ...this.snapshot, error: msg };
+      const urls = config.bot.moderatorAlerts.urls;
+      // Fetch all configured rooms in parallel. One slow/failing room must not
+      // block posts from the others, so we collect partial results: any URL
+      // that throws contributes zero posts but is logged via the per-URL
+      // wrapper below. If every URL fails we surface the last error on the
+      // snapshot.
+      const results = await Promise.all(
+        urls.map(async (url) => {
+          try {
+            const text = await this.fetchPageText(url);
+            return { url, posts: parseModeratorAlertText(text), error: null as string | null };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`moderator-alerts poll failed for ${url}:`, msg);
+            return { url, posts: [] as ModeratorPost[], error: msg };
+          }
+        }),
+      );
+      const merged = mergeAndDedupe(results.flatMap((r) => r.posts));
+      const errors = results.filter((r) => r.error).map((r) => `${r.url}: ${r.error}`);
+      const snapshotError = errors.length === results.length && results.length > 0
+        ? errors.join(' | ')
+        : null;
+      this.snapshot = { fetchedAt: new Date().toISOString(), posts: merged, error: snapshotError };
+      this.emitter.emit('alerts', merged);
     } finally {
       this.inFlight = false;
     }
   }
 
-  private async fetchPageText(): Promise<string> {
+  private async fetchPageText(url: string): Promise<string> {
     const { chromium } = await import('playwright');
     const cfg = config.bot.moderatorAlerts;
     const browser = await chromium.connectOverCDP(config.bot.playwright.chrome_cdp_url);
@@ -335,10 +354,10 @@ export class ModeratorAlertService {
       const contexts = browser.contexts();
       if (contexts.length === 0) throw new Error('no Chrome contexts attached');
       const context = contexts[0];
-      const existing = context.pages().find((p) => p.url().includes(cfg.url));
+      const existing = context.pages().find((p) => p.url().includes(url));
       const page = existing ?? (await context.newPage());
       if (!existing) {
-        await page.goto(cfg.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
         await page.waitForTimeout(cfg.hydration_wait_ms);
       }
       return (await page.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
@@ -346,6 +365,24 @@ export class ModeratorAlertService {
       await browser.close();
     }
   }
+}
+
+/**
+ * Merge posts from multiple rooms, dropping duplicates by (postedAt, title).
+ * Same key as `rawStreamService.bindModeratorAlertService` so a post appearing
+ * in both pre-market-prep and daily-market-profits is collapsed identically
+ * at the snapshot and at the WS-event boundary.
+ */
+export function mergeAndDedupe(posts: ModeratorPost[]): ModeratorPost[] {
+  const seen = new Set<string>();
+  const out: ModeratorPost[] = [];
+  for (const post of posts) {
+    const key = `${post.postedAt ?? ''}|${post.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(post);
+  }
+  return out;
 }
 
 export const moderatorAlertService = new ModeratorAlertService();

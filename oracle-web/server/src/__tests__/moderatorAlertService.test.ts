@@ -5,7 +5,7 @@ vi.mock('../config.js', () => ({
     bot: {
       moderatorAlerts: {
         enabled: false,
-        url: '',
+        urls: [],
         poll_interval_sec: 120,
         hydration_wait_ms: 0,
       },
@@ -17,6 +17,7 @@ vi.mock('../config.js', () => ({
 import {
   parseModeratorAlertText,
   moderatorAlertService,
+  mergeAndDedupe,
   type ModeratorPost,
 } from '../services/moderatorAlertService.js';
 
@@ -318,5 +319,44 @@ describe('moderatorAlertService onAlerts subscription', () => {
     expect(snapshot.posts).toHaveLength(1);
     expect(snapshot.posts[0].signal?.symbol).toBe('ABCD');
     expect(snapshot.fetchedAt).not.toBeNull();
+  });
+});
+
+describe('mergeAndDedupe', () => {
+  const make = (title: string, postedAt: string | null): ModeratorPost => ({
+    title,
+    kind: 'alert',
+    author: 'Tim Bohen',
+    postedAt,
+    body: '',
+    signal: null,
+    backups: [],
+    symbols: [],
+  });
+
+  it('drops duplicates that share (postedAt, title)', () => {
+    const a = make('Daily Market Profits Alert 5-4-2026', '2026-05-04T13:42:00.000Z');
+    const b = make('Daily Market Profits Alert 5-4-2026', '2026-05-04T13:42:00.000Z');
+    expect(mergeAndDedupe([a, b])).toHaveLength(1);
+  });
+
+  it('keeps posts that share a title but were posted at different times', () => {
+    const a = make('Pre Market Prep Note', '2026-05-04T13:42:00.000Z');
+    const b = make('Pre Market Prep Note', '2026-05-05T13:42:00.000Z');
+    expect(mergeAndDedupe([a, b])).toHaveLength(2);
+  });
+
+  it('treats null postedAt consistently when titles match', () => {
+    const a = make('Announcements', null);
+    const b = make('Announcements', null);
+    expect(mergeAndDedupe([a, b])).toHaveLength(1);
+  });
+
+  it('preserves order of first occurrence', () => {
+    const first = make('alpha', '2026-05-04T01:00:00.000Z');
+    const second = make('beta', '2026-05-04T02:00:00.000Z');
+    const dup = make('alpha', '2026-05-04T01:00:00.000Z');
+    const merged = mergeAndDedupe([first, second, dup]);
+    expect(merged.map((p) => p.title)).toEqual(['alpha', 'beta']);
   });
 });

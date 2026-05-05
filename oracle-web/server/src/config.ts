@@ -76,7 +76,18 @@ const configSchema = z.object({
       moderatorAlerts: z
         .object({
           enabled: z.boolean().default(false),
-          url: z.string().default('https://university.stockstotrade.com/room/daily-market-profits'),
+          // Both rooms carry Bohen-style "Signal:/Risk Zone:/Target:" posts.
+          // pre-market-prep is the canonical source for Bohen + Oracle alerts;
+          // daily-market-profits is kept as a backup/cross-post sink. Same
+          // parser runs against each; rawStreamService dedupes by
+          // (postedAt, title) at the WS-emit boundary, and pollOnce dedupes
+          // again so getSnapshot() returns clean posts.
+          urls: z
+            .array(z.string())
+            .default([
+              'https://university.stockstotrade.com/room/pre-market-prep',
+              'https://university.stockstotrade.com/room/daily-market-profits',
+            ]),
           poll_interval_sec: z.number().positive().default(180),
           hydration_wait_ms: z.number().int().nonnegative().default(5_000),
         })

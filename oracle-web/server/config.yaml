@@ -49,7 +49,9 @@ bot:
     frame_max_wait_ms: 30000
   moderatorAlerts:
     enabled: true
-    url: "https://university.stockstotrade.com/room/daily-market-profits"
+    urls:
+      - "https://university.stockstotrade.com/room/pre-market-prep"
+      - "https://university.stockstotrade.com/room/daily-market-profits"
     poll_interval_sec: 180
     hydration_wait_ms: 5000
   incomeTraderChat:
