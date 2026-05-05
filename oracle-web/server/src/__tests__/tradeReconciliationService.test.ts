@@ -56,13 +56,18 @@ function sellFill(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
 
 describe('applyFillsToLedger', () => {
   it('rewrites exitPrice/pnl/rMultiple from the matching sell fill', () => {
-    const { reconciled, changed } = applyFillsToLedger([trade()], [sellFill()]);
+    const { reconciled, changed } = applyFillsToLedger([trade()], [sellFill()], 'alpaca');
     expect(changed).toBe(1);
     expect(reconciled[0].exitPrice).toBe(11);
     expect(reconciled[0].pnl).toBe(100);
     expect(reconciled[0].pnlPct).toBeCloseTo(10);
     expect(reconciled[0].rMultiple).toBe(2);
-    expect(reconciled[0].exitDetail).toContain('reconciled from Alpaca fill');
+    expect(reconciled[0].exitDetail).toContain('reconciled from alpaca fill');
+  });
+
+  it('uses default broker name when omitted', () => {
+    const { reconciled } = applyFillsToLedger([trade()], [sellFill()]);
+    expect(reconciled[0].exitDetail).toContain('reconciled from broker fill');
   });
 
   it('ignores buy fills, unfilled orders, and symbol/qty mismatches', () => {
@@ -107,8 +112,9 @@ describe('applyFillsToLedger', () => {
     const { reconciled } = applyFillsToLedger(
       [trade({ exitDetail: 'Original note' })],
       [sellFill()],
+      'alpaca',
     );
-    expect(reconciled[0].exitDetail).toBe('Original note (reconciled from Alpaca fill)');
+    expect(reconciled[0].exitDetail).toBe('Original note (reconciled from alpaca fill)');
   });
 });
 

@@ -49,13 +49,26 @@ export interface BrokerOrder {
   submittedAt: string | null;
 }
 
-export interface SubmitOrderParams {
-  symbol: string;
-  qty: number;
-  side: 'buy' | 'sell';
-  type: 'market' | 'limit';
-  limitPrice?: number;
-}
+/**
+ * Discriminated union: `limitPrice` is required for limit orders and not
+ * permitted on market orders. Using a union (vs an optional field) makes
+ * "limit without a price" a compile error rather than a runtime check that
+ * has to live in every adapter.
+ */
+export type SubmitOrderParams =
+  | {
+      symbol: string;
+      qty: number;
+      side: 'buy' | 'sell';
+      type: 'market';
+    }
+  | {
+      symbol: string;
+      qty: number;
+      side: 'buy' | 'sell';
+      type: 'limit';
+      limitPrice: number;
+    };
 
 export type OrderStatusFilter = 'all' | 'closed' | 'open';
 

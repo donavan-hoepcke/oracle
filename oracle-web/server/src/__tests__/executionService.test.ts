@@ -322,7 +322,7 @@ describe('ExecutionService', () => {
     it('keeps trade active and does not write a phantom ledger when broker rejects close', async () => {
       // Reproduces the PDT 403 case: closePosition errors at Alpaca, so the
       // position is still open. Without the fix, exitTrade would push a fake
-      // ledger entry and clear activeTrades, then reconcileWithAlpaca would
+      // ledger entry and clear activeTrades, then reconcileWithBroker would
       // re-adopt the position next cycle and the loop would repeat.
       const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
       await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
@@ -351,7 +351,7 @@ describe('ExecutionService', () => {
     it('does not re-adopt an Alpaca position that has an open sell order', async () => {
       // Reproduces the reconcile-loop guard: if a close order is in flight
       // (e.g. a prior cycle's exit hasn't filled yet, or a server crashed
-      // between submit and ledger update), reconcileWithAlpaca must skip
+      // between submit and ledger update), reconcileWithBroker must skip
       // adoption so flattenAll doesn't re-stage the same position.
       mockOrderService.getPositions.mockResolvedValue([
         { symbol: 'BIYA', qty: 70, avgEntryPrice: 1.41, currentPrice: 1.30, marketValue: 91, unrealizedPL: -7.7 },
@@ -380,7 +380,7 @@ describe('ExecutionService', () => {
     it('flattenAll keeps trades whose broker close was rejected', async () => {
       // Reproduces the EOD flatten loop bug: every cycle wiped activeTrades
       // unconditionally even when the broker rejected closes (PDT cap), then
-      // reconcileWithAlpaca re-adopted the same positions next tick.
+      // reconcileWithBroker re-adopted the same positions next tick.
       const candidates = [
         makeCandidate('AGAE', 0.50, 0.45, 0.94),
         makeCandidate('BIYA', 1.41, 1.27, 2.11),

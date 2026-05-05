@@ -678,7 +678,7 @@ server.on('upgrade', (req, socket, head) => {
     }
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
-    const changed = await executionService.reconcileLedgerFromAlpaca(dayStart.toISOString());
+    const changed = await executionService.reconcileLedgerFromBroker(dayStart.toISOString());
     if (changed > 0) {
       console.log(`Reconciled ${changed} ledger exit(s) from Alpaca fills`);
     }

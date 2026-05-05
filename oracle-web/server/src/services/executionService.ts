@@ -59,9 +59,9 @@ export interface FilterRejection {
 export interface FlattenResult {
   /** Total number of trades the flatten was asked to close. */
   requested: number;
-  /** Symbols whose closes Alpaca accepted. Local activeTrades cleared, ledger appended. */
+  /** Symbols whose closes the broker accepted. Local activeTrades cleared, ledger appended. */
   succeeded: string[];
-  /** Symbols whose closes Alpaca rejected. Local activeTrades unchanged. */
+  /** Symbols whose closes the broker rejected. Local activeTrades unchanged. */
   failed: Array<{ symbol: string; error: string }>;
 }
 
@@ -72,7 +72,7 @@ export class ExecutionService {
   // Symbol -> unix ms when cooldown expires. Populated on bad exits (stop,
   // trailing_stop, circuit_breaker) to prevent same-session re-entries.
   private cooldown: Map<string, number> = new Map();
-  // Symbols we have filled an order for in the last N days (per Alpaca).
+  // Symbols we have filled an order for in the last N days (per the broker).
   // Used to require a higher bar for re-entry (wash-sale awareness).
   private washSaleSymbols: Set<string> = new Set();
   private washSaleRefreshedAt = 0;
@@ -115,7 +115,7 @@ export class ExecutionService {
   }
 
   /**
-   * Refresh the wash-sale watchlist from Alpaca order history. Cached for
+   * Refresh the wash-sale watchlist from broker order history. Cached for
    * WASH_SALE_REFRESH_MS to avoid pounding the API on every cycle.
    */
   private async refreshWashSaleSymbols(): Promise<void> {
@@ -184,22 +184,22 @@ export class ExecutionService {
   }
 
   /**
-   * Rewrite ledger entries in place against Alpaca's actual sell fills since
+   * Rewrite ledger entries in place against the broker's actual sell fills since
    * startIso. Corrects EOD/flatten exits that were recorded at entryPrice
    * (pnl = 0) and any other trade whose recorded exit diverged from the
    * real fill. Best effort: on fetch failure the ledger is left unchanged.
    */
-  async reconcileLedgerFromAlpaca(startIso: string): Promise<number> {
+  async reconcileLedgerFromBroker(startIso: string): Promise<number> {
     if (this.ledger.length === 0) return 0;
     const { applyFillsToLedger } = await import('./tradeReconciliationService.js');
     let orders;
     try {
       orders = await brokerService.getOrdersSince(startIso, 'closed');
     } catch (err) {
-      console.warn('reconcileLedgerFromAlpaca fetch failed:', err instanceof Error ? err.message : err);
+      console.warn('reconcileLedgerFromBroker fetch failed:', err instanceof Error ? err.message : err);
       return 0;
     }
-    const { reconciled, changed } = applyFillsToLedger(this.ledger, orders);
+    const { reconciled, changed } = applyFillsToLedger(this.ledger, orders, brokerService.name);
     if (changed > 0) this.ledger = reconciled;
     return changed;
   }
@@ -219,7 +219,7 @@ export class ExecutionService {
    * after a backend restart that lands outside regular hours.
    */
   async reconcileBrokerPositions(stocks: StockState[]): Promise<void> {
-    await this.reconcileWithAlpaca(stocks);
+    await this.reconcileWithBroker(stocks);
   }
 
   /** Build a price map from Oracle stocks, falling back to broker positions
@@ -250,7 +250,7 @@ export class ExecutionService {
 
   async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[], regime?: RegimeSnapshot): Promise<void> {
     await this.refreshWashSaleSymbols();
-    const positions = await this.reconcileWithAlpaca(stocks);
+    const positions = await this.reconcileWithBroker(stocks);
 
     const account = await this.buildAccountState();
     const reservedSymbols = await this.getReservedSymbols();
@@ -263,12 +263,12 @@ export class ExecutionService {
   }
 
   /**
-   * Adopt any Alpaca positions that are not already tracked in activeTrades.
+   * Adopt any broker positions that are not already tracked in activeTrades.
    * Protects against server restarts clearing the in-memory ledger while
    * positions remain at the broker. Uses the live Oracle watchlist for stop
    * and target where available; falls back to max_risk_pct-derived defaults.
    */
-  private async reconcileWithAlpaca(stocks: StockState[]): Promise<BrokerPosition[] | null> {
+  private async reconcileWithBroker(stocks: StockState[]): Promise<BrokerPosition[] | null> {
     let positions;
     let openOrders;
     try {
@@ -281,7 +281,7 @@ export class ExecutionService {
       return null;
     }
     // A position with an open sell order means a close is already in flight
-    // (either submitted by us this cycle, or queued by Alpaca for the next
+    // (either submitted by us this cycle, or queued by the broker for the next
     // session). Adopting it here would clobber the in-flight exit and double-
     // book the symbol on the next entry cycle.
     const symbolsWithOpenSell = new Set(
@@ -336,7 +336,7 @@ export class ExecutionService {
         maxFavorableR: currentR,
         pendingSince: new Date(),
         rationale: [
-          `Adopted orphaned Alpaca position (original strategy unknown)`,
+          `Adopted orphaned broker position (original strategy unknown)`,
           oracleStop !== null && oracleStop > maxRiskStop
             ? `Stop = Oracle watchlist stopPrice ${oracleStop.toFixed(3)} (tighter than ${(exec.max_risk_pct * 100).toFixed(0)}% max-risk stop ${maxRiskStop.toFixed(3)})`
             : `Stop = ${(exec.max_risk_pct * 100).toFixed(0)}% max-risk cap ${maxRiskStop.toFixed(3)} (Oracle stop ${oracleStop?.toFixed(3) ?? 'n/a'} was too wide)`,
@@ -353,9 +353,9 @@ export class ExecutionService {
   }
 
   /**
-   * Symbols that already have a position or open order at Alpaca.
+   * Symbols that already have a position or open order at the broker.
    * Used to avoid placing duplicate orders after a bot restart or when
-   * the in-process ledger has drifted from Alpaca's state.
+   * the in-process ledger has drifted from the broker's state.
    */
   private async getReservedSymbols(): Promise<Set<string>> {
     const reserved = new Set<string>();
@@ -367,7 +367,7 @@ export class ExecutionService {
       for (const p of positions) reserved.add(p.symbol);
       for (const o of openOrders) reserved.add(o.symbol);
     } catch (err) {
-      console.error('Failed to fetch Alpaca state for dup check:', err);
+      console.error('Failed to fetch broker state for dup check:', err);
     }
     return reserved;
   }
@@ -395,17 +395,17 @@ export class ExecutionService {
     // removes successfully-closed trades; trades whose closePosition was
     // rejected by the broker (e.g. PDT cap) MUST stay in activeTrades so the
     // next cycle retries. Wiping the list here would re-create the loop where
-    // reconcileWithAlpaca then re-adopts the still-open positions.
+    // reconcileWithBroker then re-adopts the still-open positions.
 
     // The exitTrade calls above stamped placeholder exit prices equal to
-    // entryPrice. Alpaca needs a moment to fill the closing market orders;
+    // entryPrice. The broker needs a moment to fill the closing market orders;
     // then we rewrite the ledger rows with the real fill prices.
     if (succeeded.length > 0) {
       await new Promise((r) => setTimeout(r, 2000));
       const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       try {
-        const changed = await this.reconcileLedgerFromAlpaca(start);
-        if (changed > 0) console.log(`Reconciled ${changed} flatten exit(s) from Alpaca fills`);
+        const changed = await this.reconcileLedgerFromBroker(start);
+        if (changed > 0) console.log(`Reconciled ${changed} flatten exit(s) from broker fills`);
       } catch (err) {
         console.warn('Post-flatten reconciliation failed:', err instanceof Error ? err.message : err);
       }
@@ -492,18 +492,27 @@ export class ExecutionService {
 
       this.rejections.delete(candidate.symbol);
 
-      const orderType = candidate.setup === 'red_candle_theory' || candidate.setup === 'momentum_continuation'
-        ? 'limit' as const
-        : 'market' as const;
+      const useLimit =
+        candidate.setup === 'red_candle_theory' || candidate.setup === 'momentum_continuation';
+      // SubmitOrderParams is a discriminated union — limitPrice is required
+      // for limit orders and not allowed on market orders, so we branch.
+      const orderParams = useLimit
+        ? {
+            symbol: candidate.symbol,
+            qty: size.shares,
+            side: 'buy' as const,
+            type: 'limit' as const,
+            limitPrice: candidate.suggestedEntry,
+          }
+        : {
+            symbol: candidate.symbol,
+            qty: size.shares,
+            side: 'buy' as const,
+            type: 'market' as const,
+          };
 
       try {
-        const order = await brokerService.submitOrder({
-          symbol: candidate.symbol,
-          qty: size.shares,
-          side: 'buy',
-          type: orderType,
-          limitPrice: orderType === 'limit' ? candidate.suggestedEntry : undefined,
-        });
+        const order = await brokerService.submitOrder(orderParams);
 
         this.activeTrades.push({
           symbol: candidate.symbol,
@@ -658,12 +667,12 @@ export class ExecutionService {
     try {
       await brokerService.closePosition(trade.symbol);
     } catch (err) {
-      // Alpaca rejected the close (e.g. PDT cap, position locked, market closed
+      // The broker rejected the close (e.g. PDT cap, position locked, market closed
       // for an OTC name). Do NOT push a ledger entry or remove from activeTrades
       // — the position is still open at the broker. Revert status so the next
       // cycle retries via the same trigger (price still below stop, EOD flatten,
       // etc.). Without this, `flattenAll` would pile up phantom ledger entries
-      // every 30 s while reconcileWithAlpaca re-adopts the unsold position.
+      // every 30 s while reconcileWithBroker re-adopts the unsold position.
       trade.status = previousStatus;
       const msg = err instanceof Error ? err.message : String(err);
       console.error(

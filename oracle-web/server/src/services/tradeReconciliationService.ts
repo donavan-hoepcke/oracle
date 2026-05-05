@@ -5,17 +5,25 @@ import type { BrokerOrder } from '../types/broker.js';
 import { TradeLedgerEntry } from './executionService.js';
 
 /**
- * Pair each closed trade with the Alpaca sell fill that actually closed
+ * Pair each closed trade with the broker sell fill that actually closed
  * it and rewrite exitPrice/pnl/pnlPct/rMultiple from the real fill.
  * A trade is only reconciled when a sell fill with the exact same
  * symbol and qty filled after the entry is available and hasn't
  * already been claimed by another trade.
+ *
+ * Broker-agnostic — works against any BrokerAdapter that returns
+ * BrokerOrder[] from getOrdersSince(). The `brokerName` parameter is
+ * used only in the human-readable exitDetail string ("reconciled from
+ * <broker> fill"); it has no effect on matching logic. Passed in rather
+ * than imported so the function stays pure (no I/O, no module-level
+ * dependencies) for unit testing.
  *
  * Exported for unit testing; no I/O.
  */
 export function applyFillsToLedger(
   trades: TradeLedgerEntry[],
   fills: BrokerOrder[],
+  brokerName: string = 'broker',
 ): { reconciled: TradeLedgerEntry[]; changed: number } {
   const sellFills = fills
     .filter(
@@ -62,8 +70,8 @@ export function applyFillsToLedger(
       pnlPct,
       rMultiple,
       exitDetail: t.exitDetail
-        ? `${t.exitDetail} (reconciled from Alpaca fill)`
-        : 'Reconciled from Alpaca fill',
+        ? `${t.exitDetail} (reconciled from ${brokerName} fill)`
+        : `Reconciled from ${brokerName} fill`,
     };
     changed++;
   }
@@ -107,7 +115,7 @@ export class TradeReconciliationService {
       console.warn(`reconcileDay(${date}) fetch failed:`, err instanceof Error ? err.message : err);
       return { trades, changed: 0, reconciled: false };
     }
-    const { reconciled, changed } = applyFillsToLedger(trades, orders);
+    const { reconciled, changed } = applyFillsToLedger(trades, orders, brokerService.name);
     if (changed > 0) {
       this.cache.set(date, reconciled);
       return { trades: reconciled, changed, reconciled: true };

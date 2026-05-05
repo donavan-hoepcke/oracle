@@ -38,9 +38,12 @@ export class AlpacaAdapter implements BrokerAdapter {
     // Alpaca exposes `cash_withdrawable` for the settled-cash component on
     // cash accounts. On margin accounts the field equals `cash` (no T+1
     // settlement constraint), so the mapping is safe in both cases.
-    const settledCash = data.cash_withdrawable
-      ? parseFloat(data.cash_withdrawable)
-      : cash;
+    // Explicit null/undefined check, NOT truthy: a fully-unsettled cash
+    // account legitimately reports `cash_withdrawable: 0` (or "0") which
+    // a truthy check would treat as missing and fall back to `cash`,
+    // making us under-count unsettled funds and over-count settled.
+    const settledCash =
+      data.cash_withdrawable != null ? parseFloat(data.cash_withdrawable) : cash;
     return {
       cash,
       portfolioValue: parseFloat(data.portfolio_value),

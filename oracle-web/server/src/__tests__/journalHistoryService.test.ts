@@ -125,7 +125,10 @@ describe('JournalHistoryService', () => {
     expect(result).not.toBeNull();
     expect(result!.closed[0].exitPrice).toBe(12);
     expect(result!.closed[0].pnl).toBe(2);
-    expect(result!.closed[0].exitDetail).toContain('Reconciled from Alpaca');
+    // Phase 1 broker-adapter rename: the message is now broker-neutral and
+    // includes the active adapter's `name`. Match the pattern rather than
+    // the literal so this test doesn't have to change again on Phase 2.
+    expect(result!.closed[0].exitDetail).toMatch(/Reconciled from \w+ fill/i);
     expect(result!.reconciled).toBe(true);
   });
 });

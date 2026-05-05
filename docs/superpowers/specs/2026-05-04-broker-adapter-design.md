@@ -1,6 +1,8 @@
 # Broker Adapter — Design Spec
 
-> **Status:** Proposed. Not yet implemented.
+> **Status:** Phase 1 implemented (interface + Alpaca adapter behind it). Phase 2 (IBKR adapter) and Phase 3 (settled-cash sizing) still planned.
+>
+> **Source of truth for the implemented surface is `server/src/types/broker.ts`** — if the type signatures shown later in this spec disagree with that file, trust the file. The "Components" section was written before implementation and may have small drift in field names; cross-check before coding to it.
 
 ## Context
 
