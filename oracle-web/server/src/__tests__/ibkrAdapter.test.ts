@@ -44,7 +44,12 @@ function makeAdapter(opts: {
       baseUrl: 'https://localhost:5000/v1/api',
       accountId: 'DU1234567',
       cashAccount: opts.cashAccount ?? false,
-      allowSelfSignedTls: false, // bypass undici Agent in tests
+      // Bypass undici Agent in tests — keeps the dynamic import out of
+      // the test runner's path. Production runs always set this true
+      // for the local-gateway case.
+      allowSelfSignedTls: false,
+      pollSessionKeepaliveSec: 60,
+      conidCachePath: '/tmp/test-conid-cache.json',
     },
     fetch: opts.fetch,
     session,

@@ -14,6 +14,8 @@ function createBrokerAdapter(): BrokerAdapter {
           accountId: config.broker.ibkr.account_id,
           cashAccount: config.broker.ibkr.cash_account,
           allowSelfSignedTls: config.broker.ibkr.allow_self_signed_tls,
+          pollSessionKeepaliveSec: config.broker.ibkr.poll_session_keepalive_sec,
+          conidCachePath: config.broker.ibkr.conid_cache_path,
         },
       });
     default: {

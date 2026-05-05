@@ -43,6 +43,10 @@ interface IbkrAdapterConfig {
   accountId: string;
   cashAccount: boolean;
   allowSelfSignedTls: boolean;
+  /** Tickle interval in seconds. Forwarded to IbkrSession.intervalMs. */
+  pollSessionKeepaliveSec: number;
+  /** Path to the persisted conid cache JSON. */
+  conidCachePath: string;
 }
 
 export interface IbkrAdapterDeps {
@@ -103,18 +107,28 @@ export class IbkrAdapter implements BrokerAdapter {
     this.isCashAccount = deps.config.cashAccount;
     this.fetcher = deps.fetch ?? globalThis.fetch;
     this.session =
-      deps.session ?? new IbkrSession({ tickle: () => this.tickleViaFetch() });
+      deps.session ??
+      new IbkrSession({
+        tickle: () => this.tickleViaFetch(),
+        intervalMs: deps.config.pollSessionKeepaliveSec * 1000,
+      });
     this.conidCache =
       deps.conidCache ??
       new IbkrConidCache({
-        cachePath: '.ibkr-state/conid-cache.json',
+        cachePath: deps.config.conidCachePath,
         fetcher: (sym) => this.searchConid(sym),
       });
   }
 
   /** Production wiring calls this once at startup. Idempotent — safe to
-   *  call multiple times. */
+   *  call multiple times.
+   *
+   *  IMPORTANT: callers MUST await this. The adapter does NOT auto-init
+   *  on first request; methods called before init() will fail or use a
+   *  cold conid cache. The factory in services/brokers/index.ts wires
+   *  this in the server bootstrap path. */
   async init(): Promise<void> {
+    await this.ensureTlsDispatcher();
     await this.session.start();
     await this.conidCache.ensureLoaded();
   }
@@ -313,16 +327,28 @@ export class IbkrAdapter implements BrokerAdapter {
 
   async closePosition(symbol: string): Promise<void> {
     const positions = await this.getPositions();
+    await this.closePositionFromCachedList(symbol, positions);
+  }
+
+  async closeAllPositions(): Promise<void> {
+    // Fetch positions ONCE and reuse the list for all closures, rather
+    // than letting each closePosition() re-fetch. With N positions, the
+    // naive pattern was 1 + N getPositions calls; this is 1 + 0.
+    const positions = await this.getPositions();
+    await Promise.all(
+      positions.map((p) => this.closePositionFromCachedList(p.symbol, positions)),
+    );
+  }
+
+  private async closePositionFromCachedList(
+    symbol: string,
+    positions: BrokerPosition[],
+  ): Promise<void> {
     const pos = positions.find((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
     if (!pos || pos.qty === 0) return;
     const qty = Math.abs(pos.qty);
     const side = pos.qty > 0 ? 'sell' : 'buy';
     await this.submitOrder({ symbol, qty, side, type: 'market' });
-  }
-
-  async closeAllPositions(): Promise<void> {
-    const positions = await this.getPositions();
-    await Promise.all(positions.map((p) => this.closePosition(p.symbol)));
   }
 
   // -- internals -----------------------------------------------------------
@@ -415,23 +441,40 @@ export class IbkrAdapter implements BrokerAdapter {
   }
 
   private tlsOptions(): { dispatcher?: unknown } {
-    // The gateway uses a self-signed cert by default. node-undici (the
-    // global fetch impl in Node 18+) refuses self-signed TLS unless we
-    // pass a permissive dispatcher. The flag is an explicit opt-in so
-    // production deployments behind a proper TLS frontend keep strict
-    // verification.
+    // The gateway uses a self-signed cert by default. Node's built-in
+    // fetch (undici) refuses self-signed TLS unless we pass a permissive
+    // dispatcher. The flag is an explicit opt-in so production
+    // deployments behind a proper TLS frontend keep strict verification.
     if (!this.cfg.allowSelfSignedTls) return {};
-    // We avoid importing undici at module scope so the tests' fake fetch
-    // path doesn't hit it. Production callers will set allow_self_signed_tls
-    // true and the gateway is reachable; if Node's fetch can't connect at
-    // all, the adapter surfaces the underlying TLS error.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const undici = require('undici') as { Agent: new (opts: unknown) => unknown };
-    return {
-      dispatcher: new undici.Agent({
-        connect: { rejectUnauthorized: false },
-      }),
+    // Lazily-resolved dispatcher: this is called per-request, but
+    // resolveTlsDispatcher() caches the dispatcher on the first call so
+    // the dynamic import only fires once.
+    return { dispatcher: this.tlsDispatcher };
+  }
+
+  private _tlsDispatcher: unknown = null;
+  private get tlsDispatcher(): unknown {
+    return this._tlsDispatcher;
+  }
+
+  /** Lazily build the undici dispatcher. Only used when
+   *  allowSelfSignedTls is true; called from init() so the dispatcher
+   *  exists before any request is made. */
+  private async ensureTlsDispatcher(): Promise<void> {
+    if (!this.cfg.allowSelfSignedTls) return;
+    if (this._tlsDispatcher !== null) return;
+    // ESM dynamic import — `require` is unavailable in this codebase
+    // (server is "type": "module" / NodeNext). Importing undici at module
+    // scope was an option but adds a hard dep edge for tests that don't
+    // need it; lazy-import keeps adapter construction cheap.
+    // Suppress the type-resolution error: undici ships with Node 18+ but
+    // isn't a declared dependency in package.json. The shape we use
+    // (Agent class with a constructor taking { connect: { rejectUnauthorized } })
+    // has been stable for years.
+    const undici = (await import(/* @vite-ignore */ 'undici' as string)) as {
+      Agent: new (opts: unknown) => unknown;
     };
+    this._tlsDispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
   }
 }
 

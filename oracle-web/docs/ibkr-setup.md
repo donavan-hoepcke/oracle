@@ -27,15 +27,24 @@ is `DU` (e.g. `DU1234567`); the live ID is `U` (e.g. `U1234567`).
 Both have the same API surface; only the ID and underlying balances
 differ. Recommend running paper for at least a week before flipping live.
 
-## 2. Download the Client Portal Gateway
+## 2. Install the Client Portal Gateway
 
 The gateway is a Java app you run locally. It speaks to IBKR's servers
 on your behalf and exposes a REST API on `https://localhost:5000` (default).
 
-- Direct download: <https://download2.interactivebrokers.com/portal/clientportal.gw.zip>
-  *(URL has been stable for years — if this 404s, search "Client Portal Gateway
-   download" on interactivebrokers.com)*
-- Unzip somewhere persistent (e.g. `C:\ibkr-gateway` or `~/ibkr-gateway`).
+We **don't vendor IBKR's gateway in this repo** — it's their IP and the
+license terms for redistribution aren't documented. Instead, run the
+included installer:
+
+```bash
+cd oracle-web
+npm run ibkr-gateway:install
+```
+
+That downloads the official zip from IBKR's CDN and unpacks it into
+`oracle-web/vendor/ibkr-gateway/` (gitignored). Idempotent — safe to
+re-run; pass `--force` (or `npm run ibkr-gateway:reinstall`) if IBKR
+ships an update.
 
 You also need **Java 8 or newer**. Most systems have it; check with
 `java -version`. If missing, install [Adoptium Temurin](https://adoptium.net/)
@@ -43,7 +52,7 @@ You also need **Java 8 or newer**. Most systems have it; check with
 
 ## 3. Start the gateway
 
-From the gateway directory:
+From `oracle-web/vendor/ibkr-gateway/`:
 
 **Windows (PowerShell):**
 ```powershell
@@ -112,7 +121,7 @@ Restart the server. On startup the adapter:
 ## 7. Run the smoke test before going live
 
 ```bash
-npm run --prefix oracle-web/server -- ts-node scripts/ibkr-smoke.ts
+cd oracle-web/server && npx tsx scripts/ibkr-smoke.ts
 ```
 
 The smoke script exercises submit / poll / cancel / close against your

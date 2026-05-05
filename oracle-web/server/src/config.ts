@@ -221,8 +221,10 @@ const configSchema = z.object({
            *  first lookup; survives process restarts. */
           conid_cache_path: z.string().default('.ibkr-state/conid-cache.json'),
           /** When the gateway uses self-signed TLS (the default for local
-           *  installs), node-fetch refuses to connect. Set true ONLY for
-           *  the local-gateway case. */
+           *  installs), Node's built-in fetch (undici) refuses to connect.
+           *  Setting this true installs a permissive Agent dispatcher; use
+           *  it ONLY for the local-gateway case. Production deployments
+           *  behind a real TLS frontend should leave this false. */
           allow_self_signed_tls: z.boolean().default(true),
         })
         .default({}),
