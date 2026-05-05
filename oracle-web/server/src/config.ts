@@ -276,7 +276,18 @@ function loadConfig(): Config {
   const configPath = resolve(__dirname, '../config.yaml');
   const configFile = readFileSync(configPath, 'utf-8');
   const rawConfig = parseYaml(configFile);
-  return configSchema.parse(rawConfig);
+  const parsed = configSchema.parse(rawConfig);
+
+  // Account IDs are per-machine and shouldn't be committed in config.yaml.
+  // Override from env vars if they're set; otherwise fall back to whatever
+  // the yaml contains (typically empty placeholders). The same pattern is
+  // used by APCA_API_KEY_ID etc. above.
+  const paperEnv = process.env.IBKR_PAPER_ACCOUNT_ID;
+  if (paperEnv) parsed.broker.ibkr.profiles.paper.account_id = paperEnv;
+  const liveEnv = process.env.IBKR_LIVE_ACCOUNT_ID;
+  if (liveEnv) parsed.broker.ibkr.profiles.live.account_id = liveEnv;
+
+  return parsed;
 }
 
 export const config = loadConfig();
