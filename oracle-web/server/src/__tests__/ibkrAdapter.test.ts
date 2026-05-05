@@ -290,6 +290,102 @@ describe('IbkrAdapter REST methods', () => {
     expect(called).toBe(true);
   });
 
+  it('submitBracketOrder() posts entry+target+stop with shared cOID/parentId', async () => {
+    const conidCache = new IbkrConidCache({
+      cachePath: await tempCachePath(),
+      fetcher: async () => [{ conid: 999, exchange: 'NYSE', secType: 'STK' }],
+    });
+    let postedBody: { orders: Array<Record<string, unknown>> } | null = null;
+    const fetch: typeof globalThis.fetch = async (url, init) => {
+      const u = new URL(url as string);
+      if (
+        u.pathname.endsWith('/iserver/account/DU1234567/orders') &&
+        init?.method === 'POST'
+      ) {
+        postedBody = JSON.parse(init.body as string);
+        return new Response(
+          JSON.stringify([
+            { order_id: 'entry-1' },
+            { order_id: 'target-1' },
+            { order_id: 'stop-1' },
+          ]),
+          { status: 200 },
+        ) as unknown as Response;
+      }
+      if (u.pathname.endsWith('/iserver/account/orders')) {
+        return new Response(
+          JSON.stringify({
+            orders: [
+              { orderId: 'entry-1', ticker: 'AAPL', status: 'Submitted', side: 'BUY' },
+              { orderId: 'target-1', ticker: 'AAPL', status: 'PreSubmitted', side: 'SELL' },
+              { orderId: 'stop-1', ticker: 'AAPL', status: 'PreSubmitted', side: 'SELL' },
+            ],
+          }),
+          { status: 200 },
+        ) as unknown as Response;
+      }
+      return new Response('not mocked', { status: 404 }) as unknown as Response;
+    };
+    const adapter = makeAdapter({ fetch, conidCache });
+    const bracket = await adapter.submitBracketOrder({
+      symbol: 'AAPL',
+      qty: 100,
+      side: 'buy',
+      type: 'market',
+      targetPrice: 200,
+      stopPrice: 140,
+    });
+
+    expect(postedBody).not.toBeNull();
+    const orders = postedBody!.orders;
+    expect(orders).toHaveLength(3);
+
+    // Parent: market BUY for the entry
+    expect(orders[0].side).toBe('BUY');
+    expect(orders[0].orderType).toBe('MKT');
+    expect(orders[0].quantity).toBe(100);
+    const parentCoid = orders[0].cOID as string;
+    expect(parentCoid).toMatch(/^bracket-AAPL-/);
+
+    // Target: limit SELL at 200, parentId == entry's cOID
+    expect(orders[1].side).toBe('SELL');
+    expect(orders[1].orderType).toBe('LMT');
+    expect(orders[1].price).toBe(200);
+    expect(orders[1].parentId).toBe(parentCoid);
+
+    // Stop: STP SELL with auxPrice (IBKR's stop trigger), parentId == entry's cOID
+    expect(orders[2].side).toBe('SELL');
+    expect(orders[2].orderType).toBe('STP');
+    expect(orders[2].auxPrice).toBe(140);
+    expect(orders[2].parentId).toBe(parentCoid);
+
+    expect(bracket.entry.id).toBe('entry-1');
+    expect(bracket.target.id).toBe('target-1');
+    expect(bracket.stop.id).toBe('stop-1');
+  });
+
+  it('submitBracketOrder() limit entry requires entryLimitPrice', async () => {
+    const conidCache = new IbkrConidCache({
+      cachePath: await tempCachePath(),
+      fetcher: async () => [{ conid: 999, exchange: 'NYSE', secType: 'STK' }],
+    });
+    const adapter = makeAdapter({
+      fetch: fakeFetch({}),
+      conidCache,
+    });
+    await expect(
+      adapter.submitBracketOrder({
+        symbol: 'AAPL',
+        qty: 1,
+        side: 'buy',
+        type: 'limit',
+        // intentionally omitted entryLimitPrice
+        targetPrice: 200,
+        stopPrice: 140,
+      }),
+    ).rejects.toThrow(/limit entry requires entryLimitPrice/);
+  });
+
   it('closePosition() submits a market order opposite-side at current qty', async () => {
     const conidCache = new IbkrConidCache({
       cachePath: await tempCachePath(),

@@ -37,6 +37,7 @@ const mockOrderService = vi.hoisted(() => ({
   getOpenOrders: vi.fn(),
   getOrdersSince: vi.fn(),
   submitOrder: vi.fn(),
+  submitBracketOrder: vi.fn(),
   getOrder: vi.fn(),
   cancelOrder: vi.fn(),
   closePosition: vi.fn(),
@@ -90,6 +91,14 @@ describe('ExecutionService', () => {
     mockOrderService.getOpenOrders.mockResolvedValue([]);
     mockOrderService.getOrdersSince.mockResolvedValue([]);
     mockOrderService.submitOrder.mockResolvedValue({ id: 'order-1', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null });
+    // Phase 2: entries go through submitBracketOrder, which returns
+    // { entry, target, stop }. The mock yields realistic placeholder
+    // ids per leg so executionService can track all three.
+    mockOrderService.submitBracketOrder.mockResolvedValue({
+      entry: { id: 'order-1', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+      target: { id: 'order-1-target', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+      stop: { id: 'order-1-stop', symbol: 'AGAE', status: 'accepted', filledAvgPrice: null, filledQty: null },
+    });
     service = new ExecutionService();
   });
 
@@ -100,8 +109,16 @@ describe('ExecutionService', () => {
 
       await service.onPriceCycle(candidates, stocks);
 
-      expect(mockOrderService.submitOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ symbol: 'AGAE', side: 'buy', qty: 100 }),
+      // Phase 2: entries go through submitBracketOrder (entry+target+stop
+      // OCO group at the broker), not the old single submitOrder path.
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          symbol: 'AGAE',
+          side: 'buy',
+          qty: 100,
+          targetPrice: 0.94,
+          stopPrice: 0.30,
+        }),
       );
       expect(service.getActiveTrades()).toHaveLength(1);
       expect(service.getActiveTrades()[0].symbol).toBe('AGAE');
@@ -137,7 +154,7 @@ describe('ExecutionService', () => {
       const stocks = [makeStockState('AGAE', 0.50)];
       await service.onPriceCycle(candidates, stocks);
       await service.onPriceCycle(candidates, stocks);
-      expect(mockOrderService.submitOrder).toHaveBeenCalledTimes(1);
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalledTimes(1);
     });
 
     it('does not place new entries while paused', async () => {
@@ -469,7 +486,7 @@ describe('ExecutionService', () => {
       candidate.snapshot.buyZonePrice = 0.50;
 
       await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
-      expect(mockOrderService.submitOrder).toHaveBeenCalled();
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalled();
     });
 
     it('does not apply wash-sale bar to symbols not recently traded', async () => {
@@ -479,7 +496,7 @@ describe('ExecutionService', () => {
       candidate.snapshot.buyZonePrice = 0.50;
 
       await service.onPriceCycle([candidate], [makeStockState('AGAE', 0.50)]);
-      expect(mockOrderService.submitOrder).toHaveBeenCalled();
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalled();
     });
   });
 

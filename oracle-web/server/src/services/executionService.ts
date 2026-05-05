@@ -17,6 +17,16 @@ export interface ActiveTrade {
   target: number;
   riskPerShare: number;
   orderId: string;
+  /**
+   * Broker handles for the bracket exit legs. When the entry is submitted
+   * via `submitBracketOrder`, these are populated and the broker manages
+   * exits server-side as an OCO pair — when one fills the other auto-
+   * cancels. tighten_stop replaces stopOrderId in-place; on legacy
+   * non-bracketed entries these are null and the bot manages exits in
+   * the polling loop instead.
+   */
+  targetOrderId: string | null;
+  stopOrderId: string | null;
   status: 'pending' | 'filled' | 'exiting';
   trailingState: 'initial' | 'mfe_lock' | 'breakeven' | 'trailing';
   // Max favorable R-multiple observed since entry. Drives the give-back stop
@@ -331,6 +341,12 @@ export class ExecutionService {
         target,
         riskPerShare,
         orderId: '',
+        // Adopted orphans don't have known bracket-leg ids — bot manages
+        // exits in the polling loop instead. Future: attempt to find
+        // existing target/stop orders for this symbol via getOpenOrders
+        // and adopt them too.
+        targetOrderId: null,
+        stopOrderId: null,
         status: 'filled',
         trailingState: 'initial',
         maxFavorableR: currentR,
@@ -499,25 +515,22 @@ export class ExecutionService {
 
       const useLimit =
         candidate.setup === 'red_candle_theory' || candidate.setup === 'momentum_continuation';
-      // SubmitOrderParams is a discriminated union — limitPrice is required
-      // for limit orders and not allowed on market orders, so we branch.
-      const orderParams = useLimit
-        ? {
-            symbol: candidate.symbol,
-            qty: size.shares,
-            side: 'buy' as const,
-            type: 'limit' as const,
-            limitPrice: candidate.suggestedEntry,
-          }
-        : {
-            symbol: candidate.symbol,
-            qty: size.shares,
-            side: 'buy' as const,
-            type: 'market' as const,
-          };
 
       try {
-        const order = await brokerService.submitOrder(orderParams);
+        // Bracket order: entry + target (limit-sell at suggestedTarget) +
+        // stop (stop-sell at suggestedStop). Submitted atomically — if a
+        // crash interrupts the bot after entry, the broker still has the
+        // OCO exit pair queued. tighten_stop later replaces just the
+        // stop leg via stopOrderId.
+        const bracket = await brokerService.submitBracketOrder({
+          symbol: candidate.symbol,
+          qty: size.shares,
+          side: 'buy',
+          type: useLimit ? 'limit' : 'market',
+          entryLimitPrice: useLimit ? candidate.suggestedEntry : undefined,
+          targetPrice: candidate.suggestedTarget,
+          stopPrice: candidate.suggestedStop,
+        });
 
         this.activeTrades.push({
           symbol: candidate.symbol,
@@ -529,7 +542,9 @@ export class ExecutionService {
           currentStop: candidate.suggestedStop,
           target: candidate.suggestedTarget,
           riskPerShare: candidate.suggestedEntry - candidate.suggestedStop,
-          orderId: order.id,
+          orderId: bracket.entry.id,
+          targetOrderId: bracket.target.id,
+          stopOrderId: bracket.stop.id,
           status: 'pending',
           trailingState: 'initial',
           maxFavorableR: 0,

@@ -1,10 +1,12 @@
 import { config, alpacaApiKeyId, alpacaApiSecretKey } from '../../config.js';
 import type {
+  BracketOrderResult,
   BrokerAccount,
   BrokerAdapter,
   BrokerOrder,
   BrokerPosition,
   OrderStatusFilter,
+  SubmitBracketOrderParams,
   SubmitOrderParams,
 } from '../../types/broker.js';
 
@@ -89,6 +91,65 @@ export class AlpacaAdapter implements BrokerAdapter {
     }
     const data = await res.json();
     return mapOrder(data);
+  }
+
+  async submitBracketOrder(
+    params: SubmitBracketOrderParams,
+  ): Promise<BracketOrderResult> {
+    // Alpaca bracket orders: order_class=bracket with take_profit and
+    // stop_loss in the body. The response includes a `legs` array with
+    // the two child orders. The parent order's id is the entry handle;
+    // legs[i].id are handles for the target/stop legs (used by
+    // tighten_stop to replace the stop leg specifically).
+    //
+    // Alpaca paper simulates a margin account so bracket orders work
+    // there; on a real cash account they're documented to work but the
+    // first live integration should verify (Alpaca occasionally rejects
+    // bracket orders on cash accounts citing "complex orders not
+    // supported on cash accounts" — fallback path is to submit entry
+    // alone and place OCO sell pair on fill, which is more code).
+    const body: Record<string, unknown> = {
+      symbol: params.symbol,
+      qty: String(params.qty),
+      side: params.side,
+      type: params.type,
+      time_in_force: 'day',
+      order_class: 'bracket',
+      take_profit: { limit_price: String(params.targetPrice) },
+      stop_loss: { stop_price: String(params.stopPrice) },
+    };
+    if (params.type === 'limit' && params.entryLimitPrice !== undefined) {
+      body.limit_price = String(params.entryLimitPrice);
+    }
+    const res = await fetch(`${baseUrl()}/orders`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Alpaca bracket order error: ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as Record<string, unknown> & {
+      legs?: Array<Record<string, unknown>>;
+    };
+    const entry = mapOrder(data);
+    const legs = data.legs ?? [];
+    // Alpaca returns legs in submission order: [target, stop] for our
+    // body shape. Identify by type rather than position to be defensive
+    // — if Alpaca ever changes ordering, we still pick the right legs.
+    const target = legs.find((l) => l.type === 'limit') ?? legs[0];
+    const stop = legs.find((l) => l.type === 'stop' || l.type === 'stop_limit') ?? legs[1];
+    if (!target || !stop) {
+      throw new Error(
+        `Alpaca bracket response missing legs (got ${legs.length}). Body: ${JSON.stringify(data).slice(0, 400)}`,
+      );
+    }
+    return {
+      entry,
+      target: mapOrder(target),
+      stop: mapOrder(stop),
+    };
   }
 
   async getOrder(orderId: string): Promise<BrokerOrder> {

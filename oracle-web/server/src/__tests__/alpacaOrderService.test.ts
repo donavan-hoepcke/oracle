@@ -90,6 +90,115 @@ describe('AlpacaAdapter', () => {
     });
   });
 
+  describe('submitBracketOrder', () => {
+    it('posts order_class=bracket with take_profit and stop_loss legs', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: 'parent-1',
+          symbol: 'AGAE',
+          status: 'accepted',
+          side: 'buy',
+          legs: [
+            {
+              id: 'leg-target',
+              symbol: 'AGAE',
+              status: 'held',
+              side: 'sell',
+              type: 'limit',
+              limit_price: '0.94',
+            },
+            {
+              id: 'leg-stop',
+              symbol: 'AGAE',
+              status: 'held',
+              side: 'sell',
+              type: 'stop',
+              stop_price: '0.30',
+            },
+          ],
+        }),
+      });
+
+      const result = await alpacaOrderService.submitBracketOrder({
+        symbol: 'AGAE',
+        qty: 100,
+        side: 'buy',
+        type: 'market',
+        targetPrice: 0.94,
+        stopPrice: 0.30,
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.order_class).toBe('bracket');
+      expect(body.take_profit).toEqual({ limit_price: '0.94' });
+      // String(0.3) drops the trailing zero — Alpaca accepts either form.
+      expect(body.stop_loss).toEqual({ stop_price: '0.3' });
+      // Identify legs by their type, not array position — defensive against
+      // Alpaca ever changing the response ordering.
+      expect(result.entry.id).toBe('parent-1');
+      expect(result.target.id).toBe('leg-target');
+      expect(result.stop.id).toBe('leg-stop');
+    });
+
+    it('limit entry includes limit_price on the parent body', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: 'parent-2',
+          symbol: 'AGAE',
+          status: 'accepted',
+          side: 'buy',
+          legs: [
+            { id: 't', symbol: 'AGAE', status: 'held', side: 'sell', type: 'limit' },
+            { id: 's', symbol: 'AGAE', status: 'held', side: 'sell', type: 'stop' },
+          ],
+        }),
+      });
+
+      await alpacaOrderService.submitBracketOrder({
+        symbol: 'AGAE',
+        qty: 50,
+        side: 'buy',
+        type: 'limit',
+        entryLimitPrice: 0.50,
+        targetPrice: 0.94,
+        stopPrice: 0.30,
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      // String(0.5) → '0.5'; trailing zero dropped.
+      expect(body.limit_price).toBe('0.5');
+    });
+
+    it('throws when Alpaca response is missing one of the bracket legs', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: 'parent-3',
+          symbol: 'AGAE',
+          status: 'accepted',
+          side: 'buy',
+          legs: [
+            // Only the target leg — broker rejected the stop somehow.
+            { id: 't', symbol: 'AGAE', status: 'held', side: 'sell', type: 'limit' },
+          ],
+        }),
+      });
+
+      await expect(
+        alpacaOrderService.submitBracketOrder({
+          symbol: 'AGAE',
+          qty: 50,
+          side: 'buy',
+          type: 'market',
+          targetPrice: 0.94,
+          stopPrice: 0.30,
+        }),
+      ).rejects.toThrow(/missing legs/);
+    });
+  });
+
   describe('getPositions', () => {
     it('maps position response to typed objects', async () => {
       mockFetch.mockResolvedValueOnce({

@@ -1,10 +1,12 @@
 import type {
+  BracketOrderResult,
   BrokerAdapter,
   BrokerAccount,
   BrokerOrder,
   BrokerOrderStatus,
   BrokerPosition,
   OrderStatusFilter,
+  SubmitBracketOrderParams,
   SubmitOrderParams,
 } from '../../types/broker.js';
 import { IbkrSession } from './ibkrSession.js';
@@ -213,6 +215,84 @@ export class IbkrAdapter implements BrokerAdapter {
     }
     const orderId = String(submitted.order_id ?? submitted.orderId ?? '');
     return this.getOrder(orderId);
+  }
+
+  async submitBracketOrder(
+    params: SubmitBracketOrderParams,
+  ): Promise<BracketOrderResult> {
+    // IBKR bracket: three orders posted together with a shared `cOID`
+    // (client order id) and `parentId` linking the children to the
+    // entry. IBKR matches them as an OCO group server-side — when the
+    // entry fills, target+stop become an active OCO pair, and when one
+    // of those fills the other auto-cancels.
+    //
+    // Per IBKR docs, the body is { orders: [parent, child1, child2] }
+    // where children carry the parent's cOID via `parentId`. cOIDs are
+    // arbitrary strings we generate; making them human-grep-friendly
+    // (symbol + ms timestamp) helps live debugging.
+    const conid = await this.conidCache.getConid(params.symbol);
+    const parentCoid = `bracket-${params.symbol}-${Date.now()}`;
+    const sideOpp: 'BUY' | 'SELL' = params.side === 'buy' ? 'SELL' : 'BUY';
+
+    const parent: Record<string, unknown> = {
+      conid,
+      orderType: params.type === 'limit' ? 'LMT' : 'MKT',
+      side: params.side === 'buy' ? 'BUY' : 'SELL',
+      quantity: params.qty,
+      tif: 'DAY',
+      cOID: parentCoid,
+    };
+    if (params.type === 'limit') {
+      if (params.entryLimitPrice === undefined) {
+        throw new Error('IBKR submitBracketOrder: limit entry requires entryLimitPrice');
+      }
+      parent.price = params.entryLimitPrice;
+    }
+
+    const target: Record<string, unknown> = {
+      conid,
+      orderType: 'LMT',
+      side: sideOpp,
+      quantity: params.qty,
+      tif: 'GTC', // exits live across sessions until they fill or we cancel
+      price: params.targetPrice,
+      parentId: parentCoid,
+    };
+
+    const stop: Record<string, unknown> = {
+      conid,
+      orderType: 'STP',
+      side: sideOpp,
+      quantity: params.qty,
+      tif: 'GTC',
+      auxPrice: params.stopPrice, // IBKR uses auxPrice for stop trigger
+      parentId: parentCoid,
+    };
+
+    const replies = (await this.post(`/iserver/account/${this.accountId}/orders`, {
+      orders: [parent, target, stop],
+    })) as IbkrOrderReply[];
+
+    const finalReplies = await this.maybeAutoConfirmReplies(replies);
+
+    // IBKR returns one submission result per order in the same order we
+    // sent them. Pick them out by position rather than by content; the
+    // cOID/parentId fields don't always echo back consistently.
+    const submitted = finalReplies.filter(
+      (r) => (r as IbkrSubmitResult).order_id || (r as IbkrSubmitResult).orderId,
+    );
+    if (submitted.length < 3) {
+      throw new Error(
+        `IBKR submitBracketOrder: expected 3 order ids in reply, got ${submitted.length}. ` +
+          `Replies: ${JSON.stringify(finalReplies).slice(0, 400)}`,
+      );
+    }
+    const [entryR, targetR, stopR] = submitted as IbkrSubmitResult[];
+    return {
+      entry: await this.getOrder(String(entryR.order_id ?? entryR.orderId ?? '')),
+      target: await this.getOrder(String(targetR.order_id ?? targetR.orderId ?? '')),
+      stop: await this.getOrder(String(stopR.order_id ?? stopR.orderId ?? '')),
+    };
   }
 
   async getOrder(id: string): Promise<BrokerOrder> {

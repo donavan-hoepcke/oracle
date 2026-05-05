@@ -88,6 +88,46 @@ export type SubmitOrderParams =
       limitPrice: number;
     };
 
+/**
+ * A bracketed entry: an entry order plus a take-profit (limit-sell) target
+ * and a stop-loss, all submitted atomically. When the entry fills, the
+ * target and stop become an OCO pair — whichever fills first cancels the
+ * other server-side.
+ *
+ * Why this exists: without it, exits are managed entirely in-process. A
+ * bot crash after entry leaves you exposed with an open position and no
+ * pending exit. Bracket orders push exit management into the broker so a
+ * crashed/restarting bot still gets out at a sane price.
+ *
+ * Notes on partial fills (decided 2026-05-04): we always bracket the
+ * original `qty`. The broker handles partial-fill semantics at exit time
+ * — when the stop or target fires, it sells whatever quantity actually
+ * ended up filled.
+ */
+export interface SubmitBracketOrderParams {
+  symbol: string;
+  qty: number;
+  /** Side of the ENTRY order. Target+stop are inferred (opposite). v1
+   *  only supports long entries; short entries can be added later. */
+  side: 'buy';
+  /** Entry order type. Limit entries require entryLimitPrice. */
+  type: 'market' | 'limit';
+  entryLimitPrice?: number;
+  /** Take-profit price for the limit-sell target leg. */
+  targetPrice: number;
+  /** Stop-loss trigger for the stop-sell leg. */
+  stopPrice: number;
+}
+
+export interface BracketOrderResult {
+  /** The entry order. status field reflects its current broker state. */
+  entry: BrokerOrder;
+  /** The take-profit limit-sell. Becomes active when entry fills. */
+  target: BrokerOrder;
+  /** The stop-loss. Becomes active when entry fills. */
+  stop: BrokerOrder;
+}
+
 export type OrderStatusFilter = 'all' | 'closed' | 'open';
 
 export interface BrokerAdapter {
@@ -106,6 +146,17 @@ export interface BrokerAdapter {
    */
   getOrdersSince(sinceIso: string, status?: OrderStatusFilter): Promise<BrokerOrder[]>;
   submitOrder(params: SubmitOrderParams): Promise<BrokerOrder>;
+  /**
+   * Submit a bracket order: entry + target (take-profit limit-sell) +
+   * stop (stop-loss). The target and stop are linked OCO at the broker
+   * — when one fills, the other is cancelled server-side.
+   *
+   * Returns the three constituent orders. The entry's id is the trade
+   * handle for status-checking; target.id and stop.id are the handles
+   * for replacing/cancelling those legs (e.g. tighten_stop replaces the
+   * stop leg in-place).
+   */
+  submitBracketOrder(params: SubmitBracketOrderParams): Promise<BracketOrderResult>;
   getOrder(id: string): Promise<BrokerOrder>;
   cancelOrder(id: string): Promise<void>;
   closePosition(symbol: string): Promise<void>;
