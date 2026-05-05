@@ -41,7 +41,18 @@ npm run ibkr-gateway:reinstall:live
 
 ## Configure
 
-Edit `oracle-web/server/config.yaml`:
+Two pieces of config:
+
+**1. Account IDs go in `.env`** (per-machine, gitignored):
+
+```
+IBKR_PAPER_ACCOUNT_ID=DU1234567
+IBKR_LIVE_ACCOUNT_ID=U1234567
+```
+
+These override `account_id` in `config.yaml` at startup, so committed config stays generic.
+
+**2. Profile selection and gateway URLs in `oracle-web/server/config.yaml`**:
 
 ```yaml
 broker:
@@ -51,11 +62,11 @@ broker:
     profiles:
       paper:
         base_url: "https://localhost:5000/v1/api"
-        account_id: "DU1234567"   # ← fill in your paper account ID
+        account_id: ""      # filled from IBKR_PAPER_ACCOUNT_ID env var
         cash_account: true
       live:
         base_url: "https://localhost:5001/v1/api"
-        account_id: "U1234567"    # ← fill in your live account ID
+        account_id: ""      # filled from IBKR_LIVE_ACCOUNT_ID env var
         cash_account: true
 ```
 

@@ -662,25 +662,42 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
-// Rehydrate today's closed-trade ledger from the JSONL recording so a
-// server restart mid-session doesn't lose the realized trade log, then
-// reconcile placeholder EOD/flatten exits against Alpaca's real sell fills.
+// Rehydrate today's closed-trade ledger from disk so a server restart
+// mid-session doesn't lose the realized trade log. Reads two sources:
+//   1. The eager-write ledger JSONL (services/ledgerStore.ts) — strictly
+//      more up-to-date than cycle snapshots; contains every trade closed
+//      this session including ones that never reached a writeCycle tick.
+//   2. The cycle JSONL via journalHistoryService — fallback for older
+//      days written before ledgerStore existed, plus a backstop in case
+//      the eager file was lost.
+// hydrateLedger dedupes by symbol+entryTime so reading both is safe.
+// After hydration, reconcile placeholder EOD/flatten exits against the
+// broker's real sell fills.
 (async () => {
   try {
-    const [today] = journalHistoryService.listDays();
-    if (!today) return;
-    const day = await journalHistoryService.getDay(today);
-    if (day && day.closed.length > 0) {
-      const added = executionService.hydrateLedger(day.closed);
+    const { readLedgerForDay } = await import('./services/ledgerStore.js');
+    const eagerEntries = readLedgerForDay();
+    if (eagerEntries.length > 0) {
+      const added = executionService.hydrateLedger(eagerEntries);
       if (added > 0) {
-        console.log(`Hydrated ${added} closed trade(s) for ${today} from recording`);
+        console.log(`Hydrated ${added} closed trade(s) from eager ledger`);
+      }
+    }
+    const [today] = journalHistoryService.listDays();
+    if (today) {
+      const day = await journalHistoryService.getDay(today);
+      if (day && day.closed.length > 0) {
+        const added = executionService.hydrateLedger(day.closed);
+        if (added > 0) {
+          console.log(`Hydrated ${added} closed trade(s) for ${today} from cycle recording`);
+        }
       }
     }
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
     const changed = await executionService.reconcileLedgerFromBroker(dayStart.toISOString());
     if (changed > 0) {
-      console.log(`Reconciled ${changed} ledger exit(s) from Alpaca fills`);
+      console.log(`Reconciled ${changed} ledger exit(s) from broker fills`);
     }
   } catch (err) {
     console.warn('Ledger hydration failed:', err instanceof Error ? err.message : err);

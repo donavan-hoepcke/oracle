@@ -1,10 +1,11 @@
 import { config } from '../config.js';
 import { brokerService } from './brokers/index.js';
-import type { BrokerPosition } from '../types/broker.js';
+import type { BrokerOrder, BrokerPosition } from '../types/broker.js';
 import { tradeFilterService, AccountState } from './tradeFilterService.js';
 import { TradeCandidate, CandidateSetup } from './ruleEngineService.js';
 import { StockState } from '../websocket/priceSocket.js';
 import type { RegimeSnapshot } from './regimeService.js';
+import { appendLedgerEntry } from './ledgerStore.js';
 
 export interface ActiveTrade {
   symbol: string;
@@ -179,6 +180,29 @@ export class ExecutionService {
    * recording after a server restart). Skips duplicates keyed on
    * symbol + entryTime so it's safe to call before or after live trading.
    */
+  /**
+   * Single chokepoint for adding a closed trade to the in-memory ledger AND
+   * persisting it eagerly to disk. Eager persistence closes the 30-second
+   * window where a close lives in memory only — `recordingService.writeCycle`
+   * runs on the next polling tick, so a process restart between close and
+   * write would otherwise lose the entry. Hydration on startup reads the
+   * eager log first, so anything written here survives a restart.
+   */
+  private recordClosedTrade(entry: TradeLedgerEntry): void {
+    this.ledger.push(entry);
+    try {
+      appendLedgerEntry(entry);
+    } catch (err) {
+      // Eager persistence failures must not break the trade lifecycle:
+      // the in-memory ledger is still authoritative for this session, and
+      // the next cycle's writeCycle is the backstop. Log loud so an
+      // operator can investigate (typically: disk full, permissions).
+      console.error(
+        `Failed to eagerly persist ledger entry for ${entry.symbol}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
   hydrateLedger(entries: TradeLedgerEntry[]): number {
     const seen = new Set(
       this.ledger.map((e) => `${e.symbol}|${new Date(e.entryTime).toISOString()}`),
@@ -300,6 +324,15 @@ export class ExecutionService {
       console.error('Reconcile failed:', err);
       return null;
     }
+
+    // Step 1: detect closes the broker performed without us — bracket OCO
+    // legs firing server-side, manual liquidations on the broker's web UI,
+    // or any other path that bypasses `exitTrade`. Without this, the bot
+    // happily ratchets a trailing stop on a position that no longer exists.
+    // Runs BEFORE adoption so a closed-then-re-adopted symbol is logged
+    // with its real fill price, not as an orphan.
+    await this.detectBrokerDrivenCloses(positions, openOrders);
+
     // A position with an open sell order means a close is already in flight
     // (either submitted by us this cycle, or queued by the broker for the next
     // session). Adopting it here would clobber the in-flight exit and double-
@@ -381,6 +414,154 @@ export class ExecutionService {
       );
     }
     return positions;
+  }
+
+  /**
+   * Detect activeTrades that the broker has already exited (bracket OCO
+   * firing, manual UI liquidation, or any path that bypassed `exitTrade`)
+   * and turn them into real ledger entries. Runs once per cycle.
+   *
+   * Three outcomes per activeTrade:
+   *   - Broker has the position at full size → leave alone (managed normally)
+   *   - Broker has fewer shares than we think → downsize the activeTrade
+   *     (partial fill on a bracket leg). v1 doesn't write a partial-close
+   *     ledger entry; partials are rare and the next full close captures
+   *     the residual P&L.
+   *   - Broker has no position AND no open buy → close it. We look up the
+   *     sell fill via getOrdersSince, build a TradeLedgerEntry from the
+   *     real fill price/time, and remove the trade from activeTrades.
+   *     If no sell fill is visible yet (close just happened, broker
+   *     hasn't surfaced it), skip and retry next cycle.
+   */
+  private async detectBrokerDrivenCloses(
+    positions: BrokerPosition[],
+    openOrders: BrokerOrder[],
+  ): Promise<void> {
+    const positionMap = new Map(positions.map((p) => [p.symbol, p]));
+    const symbolsWithOpenBuy = new Set(
+      openOrders.filter((o) => o.side === 'buy').map((o) => o.symbol),
+    );
+
+    // Cache sell-fills lookup across all close-candidates this cycle.
+    // getOrdersSince returns up to 500 closed orders; one fetch covers
+    // every activeTrade, instead of one fetch per trade.
+    let sellFills: BrokerOrder[] | null = null;
+    const fetchSellFills = async (): Promise<BrokerOrder[]> => {
+      if (sellFills !== null) return sellFills;
+      const earliestEntry = this.activeTrades
+        .filter((t) => t.status === 'filled')
+        .reduce<Date | null>((acc, t) => (!acc || t.entryTime < acc ? t.entryTime : acc), null);
+      if (!earliestEntry) {
+        sellFills = [];
+        return sellFills;
+      }
+      try {
+        const orders = await brokerService.getOrdersSince(
+          earliestEntry.toISOString(),
+          'closed',
+        );
+        sellFills = orders.filter(
+          (o) => o.side === 'sell' && o.status === 'filled' && o.filledAvgPrice !== null,
+        );
+      } catch (err) {
+        console.warn(
+          `detectBrokerDrivenCloses: getOrdersSince failed: ${err instanceof Error ? err.message : err}`,
+        );
+        sellFills = [];
+      }
+      return sellFills;
+    };
+
+    // Sell fills already attributed to ledger entries earlier in the
+    // session shouldn't be re-claimed here. Build a claim set keyed on
+    // the broker's order id when ledger entries carry it (existing
+    // entries do not; this is purely a guard for future-claimed fills
+    // discovered later in the same scan).
+    const claimedFillIds = new Set<string>();
+
+    // Iterate a snapshot — we mutate activeTrades mid-loop.
+    for (const trade of [...this.activeTrades]) {
+      if (trade.status !== 'filled') continue;
+      const pos = positionMap.get(trade.symbol);
+
+      // Partial close: broker has fewer shares than we think. Downsize
+      // and continue managing the residual.
+      if (pos && pos.qty > 0 && pos.qty < trade.shares) {
+        console.log(
+          `[reconcile] downsizing ${trade.symbol} ${trade.shares} → ${pos.qty} (broker partial close)`,
+        );
+        trade.shares = pos.qty;
+        continue;
+      }
+
+      // Full match — managed normally.
+      if (pos && pos.qty >= trade.shares) continue;
+
+      // Position is gone (or the bot never owned it). If a buy is still
+      // open, this is just an entry that hasn't filled — leave it alone.
+      if (symbolsWithOpenBuy.has(trade.symbol)) continue;
+
+      const fills = await fetchSellFills();
+      const match = fills.find(
+        (o) =>
+          o.symbol === trade.symbol &&
+          !claimedFillIds.has(o.id) &&
+          o.filledAt !== null &&
+          new Date(o.filledAt) >= trade.entryTime &&
+          // Allow ±0.01 share tolerance for fractional rounding; broker
+          // qty reports vary on penny-stock fills.
+          Math.abs((o.filledQty ?? 0) - trade.shares) < 0.01,
+      );
+
+      if (!match || match.filledAvgPrice === null || match.filledAt === null) {
+        // Sell fill not yet visible — could be the broker hasn't surfaced
+        // it (just-fired bracket leg), or this trade never filled at the
+        // broker in the first place (stale phantom). Either way, we
+        // retry next cycle. After 3 cycles with no fill we'd want to
+        // surface a "needs human" flag — see the ops-monitor design.
+        continue;
+      }
+
+      claimedFillIds.add(match.id);
+
+      const exitPrice = match.filledAvgPrice;
+      const exitTime = new Date(match.filledAt);
+      const pnl = (exitPrice - trade.entryPrice) * trade.shares;
+      const pnlPct =
+        trade.entryPrice > 0 ? ((exitPrice - trade.entryPrice) / trade.entryPrice) * 100 : 0;
+      const rMultiple =
+        trade.riskPerShare > 0 ? (exitPrice - trade.entryPrice) / trade.riskPerShare : 0;
+      // Conservative reason mapping: if the trade had a stop leg at the
+      // broker AND price was at-or-below the stop level, call it a
+      // trailing_stop exit; otherwise call it 'eod'. We don't have
+      // enough info from a sell-fill alone to know the exact trigger.
+      const looksLikeStopHit = !!trade.stopOrderId && exitPrice <= trade.currentStop * 1.001;
+      const reason: TradeLedgerEntry['exitReason'] = looksLikeStopHit
+        ? 'trailing_stop'
+        : 'eod';
+
+      this.recordClosedTrade({
+        symbol: trade.symbol,
+        strategy: trade.strategy,
+        entryPrice: trade.entryPrice,
+        entryTime: trade.entryTime,
+        exitPrice,
+        exitTime,
+        shares: trade.shares,
+        riskPerShare: trade.riskPerShare,
+        pnl,
+        pnlPct,
+        rMultiple,
+        exitReason: reason,
+        exitDetail: `Broker-driven close detected via reconcile (matched ${match.id})`,
+        rationale: trade.rationale,
+      });
+
+      this.activeTrades = this.activeTrades.filter((t) => t !== trade);
+      console.log(
+        `[reconcile] closed ${trade.symbol} from broker fill: exit=${exitPrice.toFixed(3)} pnl=${pnl.toFixed(2)} reason=${reason}`,
+      );
+    }
   }
 
   /**
@@ -809,7 +990,7 @@ export class ExecutionService {
     const pnlPct = trade.entryPrice > 0 ? (exitPrice - trade.entryPrice) / trade.entryPrice * 100 : 0;
     const rMultiple = trade.riskPerShare > 0 ? (exitPrice - trade.entryPrice) / trade.riskPerShare : 0;
 
-    this.ledger.push({
+    this.recordClosedTrade({
       symbol: trade.symbol,
       strategy: trade.strategy,
       entryPrice: trade.entryPrice,
