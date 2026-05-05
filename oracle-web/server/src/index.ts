@@ -43,6 +43,7 @@ import {
   inspectRecordingDir,
 } from './services/opsProbes.js';
 import { brokerService } from './services/brokers/index.js';
+import { PROBE_NAMES, type ProbeName } from './types/opsHealth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -238,21 +239,41 @@ app.get('/api/moderator-alerts', (_req, res) => {
 });
 
 app.get('/api/ops/health', (_req, res) => {
-  res.json(opsMonitor.getSnapshot());
+  try {
+    res.json(opsMonitor.getSnapshot());
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : 'failed to get ops health' });
+  }
 });
 
 app.get('/api/ops/health/history', (req, res) => {
-  const probe = typeof req.query.probe === 'string' ? req.query.probe : '';
-  if (!probe) {
-    res.status(400).json({ error: 'probe query param required' });
-    return;
+  try {
+    const probe = typeof req.query.probe === 'string' ? req.query.probe : '';
+    if (!PROBE_NAMES.includes(probe as ProbeName)) {
+      res
+        .status(400)
+        .json({ error: `unknown probe '${probe}'`, knownProbes: PROBE_NAMES });
+      return;
+    }
+    res.json({ probe, events: opsMonitor.getHistory(probe as ProbeName) });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : 'failed to get ops health history' });
   }
-  res.json({ probe, events: opsMonitor.getHistory(probe as never) });
 });
 
 app.post('/api/ops/health/reset', (_req, res) => {
-  opsMonitor.reset();
-  res.json({ ok: true });
+  try {
+    opsMonitor.reset();
+    res.json({ ok: true });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : 'failed to reset ops health' });
+  }
 });
 
 app.get('/api/raw/income-trader-tickers', (_req, res) => {
@@ -821,10 +842,10 @@ incomeTraderChatService.start().catch((err) => {
 });
 
 // Operational monitor: wires the probe functions to live deps and starts
-// the polling loop. Declared with `let` and assigned-after to avoid TDZ on
-// the `broker_account` probe, which captures `opsMonitor` in its closure.
-// (The closure is OK because the probe is only INVOKED later by start(),
-// after the assignment completes.)
+// the polling loop. `opsMonitor` is captured in some probe closures (e.g.
+// broker_account reads getFailureCount). Those closures only run at tick
+// time, after the constructor returns and the binding is initialized — so
+// a const declaration is safe here despite the apparent self-reference.
 const opsMonitor: OpsMonitorService = new OpsMonitorService({
   probes: {
     oracle_scraper: () =>
@@ -858,12 +879,15 @@ const opsMonitor: OpsMonitorService = new OpsMonitorService({
           if (config.broker.active !== 'ibkr') {
             return { iserver: { authStatus: { authenticated: false } } };
           }
-          const profile = config.broker.ibkr.profile;
-          const baseUrl = config.broker.ibkr.profiles[profile].base_url;
-          const res = await fetch(`${baseUrl}/tickle`, { method: 'POST' });
-          return res.json() as Promise<{
-            iserver?: { authStatus?: { authenticated?: boolean } };
-          }>;
+          // Cast to the IbkrAdapter shape: BrokerAdapter is broker-agnostic
+          // but tickleAuthStatus is IBKR-specific. We've already gated on
+          // active === 'ibkr' so the runtime type is guaranteed.
+          const ibkr = brokerService as unknown as {
+            tickleAuthStatus(): Promise<{
+              iserver?: { authStatus?: { authenticated?: boolean } };
+            }>;
+          };
+          return await ibkr.tickleAuthStatus();
         },
       }),
     chrome_debug_port: () =>
