@@ -159,6 +159,24 @@ export class AlpacaAdapter implements BrokerAdapter {
     };
   }
 
+  async replaceStopLeg(stopOrderId: string, newStopPrice: number): Promise<string> {
+    // Alpaca supports in-place modification via PATCH /v2/orders/{id}.
+    // The bracket relationship is preserved — the leg keeps its parent
+    // and stays linked to the take_profit sibling as an OCO pair.
+    // Returns the same id (Alpaca preserves it on PATCH).
+    const res = await fetch(`${baseUrl()}/orders/${stopOrderId}`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify({ stop_price: String(newStopPrice) }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Alpaca replaceStopLeg error: ${res.status} ${text}`);
+    }
+    const data = (await res.json()) as Record<string, unknown>;
+    return String(data.id ?? stopOrderId);
+  }
+
   async getOrder(orderId: string): Promise<BrokerOrder> {
     const res = await fetch(`${baseUrl()}/orders/${orderId}`, { headers: headers() });
     if (!res.ok) throw new Error(`Alpaca getOrder error: ${res.status}`);

@@ -157,6 +157,24 @@ export interface BrokerAdapter {
    * stop leg in-place).
    */
   submitBracketOrder(params: SubmitBracketOrderParams): Promise<BracketOrderResult>;
+  /**
+   * Replace the stop-loss leg of a bracketed trade with a tighter stop
+   * trigger. Used by trailing-stop ratcheting — when the bot's
+   * in-memory `currentStop` advances, this pushes that change to the
+   * broker so the OCO pair protects the new (tighter) level instead
+   * of the entry-time stop.
+   *
+   * Returns the order id of the replacement stop leg. May be the same
+   * as the input id when the broker supports in-place modification
+   * (Alpaca's PATCH endpoint), or a new id when the implementation
+   * had to cancel + resubmit (IBKR semantics).
+   *
+   * `newStopPrice` MUST be tighter (higher for long, lower for short)
+   * than the existing leg — adapters and callers may rely on
+   * monotonicity for safety. Loosening a stop should go through a
+   * different path so it's auditable.
+   */
+  replaceStopLeg(stopOrderId: string, newStopPrice: number): Promise<string>;
   getOrder(id: string): Promise<BrokerOrder>;
   cancelOrder(id: string): Promise<void>;
   closePosition(symbol: string): Promise<void>;

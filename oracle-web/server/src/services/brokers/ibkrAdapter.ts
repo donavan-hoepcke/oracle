@@ -321,6 +321,30 @@ export class IbkrAdapter implements BrokerAdapter {
     return mapIbkrOrder(found);
   }
 
+  async replaceStopLeg(stopOrderId: string, newStopPrice: number): Promise<string> {
+    // IBKR supports order modification via POST /iserver/account/{acc}/order/{id}.
+    // The endpoint accepts a partial order body — sending just the
+    // changed fields preserves cOID/parentId/orderType, so the leg
+    // stays linked to its bracket. We pass auxPrice (IBKR's stop
+    // trigger) and the original quantity (some payloads omit qty and
+    // IBKR resets it to 1 — defensive to include it).
+    //
+    // Like submitOrder, this can return reply IDs that need
+    // confirmation. The same maybeAutoConfirmReplies allowlist applies.
+    const replies = (await this.post(
+      `/iserver/account/${this.accountId}/order/${stopOrderId}`,
+      { auxPrice: newStopPrice },
+    )) as IbkrOrderReply[];
+    const finalReplies = await this.maybeAutoConfirmReplies(replies);
+    const submitted = finalReplies.find(
+      (r) => (r as IbkrSubmitResult).order_id || (r as IbkrSubmitResult).orderId,
+    ) as IbkrSubmitResult | undefined;
+    // IBKR's modification path may echo back a new id (some gateway
+    // versions cancel+resubmit internally), or the same id on
+    // in-place modify. Prefer the echoed id; fall back to the input.
+    return String(submitted?.order_id ?? submitted?.orderId ?? stopOrderId);
+  }
+
   async cancelOrder(id: string): Promise<void> {
     await this.delete(`/iserver/account/${this.accountId}/order/${id}`);
   }

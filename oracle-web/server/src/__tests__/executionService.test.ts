@@ -38,6 +38,7 @@ const mockOrderService = vi.hoisted(() => ({
   getOrdersSince: vi.fn(),
   submitOrder: vi.fn(),
   submitBracketOrder: vi.fn(),
+  replaceStopLeg: vi.fn(),
   getOrder: vi.fn(),
   cancelOrder: vi.fn(),
   closePosition: vi.fn(),
@@ -204,6 +205,53 @@ describe('ExecutionService', () => {
       expect(service.getActiveTrades().filter((t) => t.symbol === 'AGAE')).toHaveLength(1);
     });
 
+    it('Phase 2.5: replaces broker stop leg when in-memory stop ratchets up', async () => {
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+
+      // Fill the entry
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      // Price runs to ~2R (0.50 + 0.10 = 0.60). MFE-lock fires; the
+      // bot's currentStop pulls up. With a bracketed trade, the
+      // broker stop leg should be replaced too.
+      mockOrderService.replaceStopLeg.mockResolvedValue('order-1-stop-v2');
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.60)]);
+
+      expect(mockOrderService.replaceStopLeg).toHaveBeenCalled();
+      const [stopId, newStop] = mockOrderService.replaceStopLeg.mock.calls[0];
+      expect(stopId).toBe('order-1-stop');
+      // The exact new stop depends on MFE-lock math — we just assert
+      // it advanced past the entry-time 0.45.
+      expect(newStop).toBeGreaterThan(0.45);
+
+      // Adapter returned a new id; ActiveTrade tracks it for the next
+      // ratchet so subsequent replacements address the right leg.
+      const trade = service.getActiveTrades().find((t) => t.symbol === 'AGAE');
+      expect(trade?.stopOrderId).toBe('order-1-stop-v2');
+    });
+
+    it('Phase 2.5: skips replaceStopLeg when in-memory stop did not advance past lastBrokerStop', async () => {
+      // Idempotency guard: if the previous cycle already pushed the
+      // current stop level to the broker, the next cycle should not
+      // re-issue the same replacement (avoids hammering the API and
+      // tripping rate limits).
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+      mockOrderService.getOrder.mockResolvedValue({ id: 'order-1', status: 'filled', filledAvgPrice: 0.50, filledQty: 100 });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.50)]);
+
+      mockOrderService.replaceStopLeg.mockResolvedValue('order-1-stop-v2');
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.60)]);
+      const callsAfterFirst = mockOrderService.replaceStopLeg.mock.calls.length;
+
+      // Second cycle at the SAME price — no new ratchet, no
+      // replacement.
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.60)]);
+      expect(mockOrderService.replaceStopLeg.mock.calls.length).toBe(callsAfterFirst);
+    });
+
     it('cancels target+stop legs before issuing a kill-switch close', async () => {
       const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
       await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
@@ -213,7 +261,7 @@ describe('ExecutionService', () => {
       mockOrderService.cancelOrder.mockResolvedValue(undefined);
       mockOrderService.closePosition.mockResolvedValue(undefined);
 
-      await service.flattenAll('eod');
+      await service.flattenAll();
 
       // Both legs must have been cancelled BEFORE closePosition fires
       // — otherwise the broker can fire the leg after the close fills,

@@ -138,6 +138,7 @@ describe('buildSymbolDetail', () => {
       // type-checks against this fixture.
       targetOrderId: 'ord-1-target',
       stopOrderId: 'ord-1-stop',
+      lastBrokerStop: 0.9,
       status: 'filled',
       trailingState: 'mfe_lock',
       maxFavorableR: 0.6,
