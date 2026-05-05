@@ -197,16 +197,27 @@ export class IbkrConidCache {
     await this.resolveOnce(symbol);
   }
 
-  private async persist(): Promise<void> {
-    const data: Record<string, ConidEntry> = {};
-    for (const [sym, entry] of this.mem) data[sym] = entry;
-    try {
-      await fs.mkdir(path.dirname(this.cachePath), { recursive: true });
-      await fs.writeFile(this.cachePath, JSON.stringify(data, null, 2), 'utf-8');
-    } catch (err) {
-      // Cache persistence failure is non-fatal — we keep working from the
-      // in-memory copy and log so an operator can fix permissions.
-      console.warn(`[IbkrConidCache] failed to persist ${this.cachePath}:`, err);
-    }
+  // Serialize disk writes via a chained promise so concurrent
+  // resolveOnce() calls for different symbols don't race each other:
+  // each call snapshots the in-memory map AT THE TIME ITS WRITE RUNS,
+  // not at schedule time, so the on-disk file always reflects the
+  // latest set of entries rather than an arbitrarily-stale subset.
+  private persistChain: Promise<void> = Promise.resolve();
+
+  private persist(): Promise<void> {
+    const next = this.persistChain.then(async () => {
+      const data: Record<string, ConidEntry> = {};
+      for (const [sym, entry] of this.mem) data[sym] = entry;
+      try {
+        await fs.mkdir(path.dirname(this.cachePath), { recursive: true });
+        await fs.writeFile(this.cachePath, JSON.stringify(data, null, 2), 'utf-8');
+      } catch (err) {
+        // Cache persistence failure is non-fatal — we keep working from
+        // the in-memory copy and log so an operator can fix permissions.
+        console.warn(`[IbkrConidCache] failed to persist ${this.cachePath}:`, err);
+      }
+    });
+    this.persistChain = next;
+    return next;
   }
 }

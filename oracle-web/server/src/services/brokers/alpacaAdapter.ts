@@ -118,7 +118,14 @@ export class AlpacaAdapter implements BrokerAdapter {
       take_profit: { limit_price: String(params.targetPrice) },
       stop_loss: { stop_price: String(params.stopPrice) },
     };
-    if (params.type === 'limit' && params.entryLimitPrice !== undefined) {
+    if (params.type === 'limit') {
+      if (params.entryLimitPrice === undefined) {
+        // SubmitBracketOrderParams documents entryLimitPrice as required
+        // for limit entries. Throw locally rather than letting Alpaca
+        // reject with a vague "invalid order" — the latter is harder to
+        // diagnose from a log line.
+        throw new Error('AlpacaAdapter.submitBracketOrder: limit entry requires entryLimitPrice');
+      }
       body.limit_price = String(params.entryLimitPrice);
     }
     const res = await fetch(`${baseUrl()}/orders`, {
@@ -245,6 +252,12 @@ function normalizeAlpacaStatus(
     case 'calculated':
     case 'stopped':
     case 'done_for_day':
+    // 'held' is the bracket-leg state Alpaca uses for the take_profit /
+    // stop_loss children that haven't activated yet. Mapping it to
+    // 'pending' (rather than the unknown-status fallback) keeps the
+    // state machine clean and avoids spamming console.warn on every
+    // bracket leg.
+    case 'held':
       return 'pending';
     case 'accepted':
       return 'accepted';

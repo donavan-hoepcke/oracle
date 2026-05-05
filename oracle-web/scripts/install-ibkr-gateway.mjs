@@ -80,22 +80,61 @@ async function downloadTo(url, dest) {
   console.log(`✓ saved to ${dest}`);
 }
 
-async function unzipTo(zipPath, dest) {
-  console.log(`→ extracting to ${dest}`);
-  await mkdir(dest, { recursive: true });
-  // Cross-platform unzip without an npm dep:
-  // Windows: tar.exe (built-in since Win10 1803) handles zip via -xf.
-  // Unix: prefer `unzip` (very common); fall back to `tar` if missing.
-  // tar with -xf works on .zip on both platforms thanks to libarchive.
-  const command = process.platform === 'win32' ? 'tar' : 'tar';
-  const proc = spawn(command, ['-xf', zipPath, '-C', dest], { stdio: 'inherit' });
-  await new Promise((resolveProc, reject) => {
+async function runProcess(command, args) {
+  return new Promise((resolveProc, reject) => {
+    const proc = spawn(command, args, { stdio: 'inherit' });
     proc.on('error', reject);
     proc.on('exit', (code) => {
       if (code === 0) resolveProc();
-      else reject(new Error(`tar exited ${code}`));
+      else reject(new Error(`${command} exited ${code}`));
     });
   });
+}
+
+async function commandExists(command) {
+  // Best-effort detection. `command -v` on POSIX, `where` on Windows.
+  // We don't fail hard here — if the lookup itself errors we just say
+  // "no" and the caller falls through to the next candidate.
+  return new Promise((resolveCheck) => {
+    const isWindows = process.platform === 'win32';
+    const probe = isWindows ? 'where' : 'sh';
+    const args = isWindows ? [command] : ['-c', `command -v ${command}`];
+    const proc = spawn(probe, args, { stdio: 'ignore' });
+    proc.on('error', () => resolveCheck(false));
+    proc.on('exit', (code) => resolveCheck(code === 0));
+  });
+}
+
+async function unzipTo(zipPath, dest) {
+  console.log(`→ extracting to ${dest}`);
+  await mkdir(dest, { recursive: true });
+  // Cross-platform unzip without an npm dep. We try the most reliable
+  // option per platform first, then fall back. GNU tar (the default on
+  // most Linux distros) does NOT extract zip archives — that was the
+  // bug Copilot caught — so prefer `unzip` on Unix.
+  if (process.platform === 'win32') {
+    // PowerShell's Expand-Archive ships with every Windows install since
+    // 10. tar.exe (libarchive-backed) also works since Win10 1803, but
+    // Expand-Archive is the documented Microsoft path.
+    await runProcess('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${dest}" -Force`,
+    ]);
+  } else {
+    // Unix: prefer `unzip`. If unavailable, try `bsdtar` (installed by
+    // libarchive on macOS). GNU tar is the wrong tool for .zip and we
+    // refuse to use it here.
+    if (await commandExists('unzip')) {
+      await runProcess('unzip', ['-q', '-o', zipPath, '-d', dest]);
+    } else if (await commandExists('bsdtar')) {
+      await runProcess('bsdtar', ['-xf', zipPath, '-C', dest]);
+    } else {
+      throw new Error(
+        'Neither `unzip` nor `bsdtar` is installed. Install one (e.g. `apt install unzip`) and re-run.',
+      );
+    }
+  }
   console.log(`✓ extracted`);
 }
 

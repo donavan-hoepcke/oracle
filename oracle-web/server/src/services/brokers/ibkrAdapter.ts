@@ -446,34 +446,32 @@ export class IbkrAdapter implements BrokerAdapter {
     // dispatcher. The flag is an explicit opt-in so production
     // deployments behind a proper TLS frontend keep strict verification.
     if (!this.cfg.allowSelfSignedTls) return {};
-    // Lazily-resolved dispatcher: this is called per-request, but
-    // resolveTlsDispatcher() caches the dispatcher on the first call so
-    // the dynamic import only fires once.
-    return { dispatcher: this.tlsDispatcher };
+    if (this._tlsDispatcher === null) {
+      // Defensive throw: tlsOptions() is reached on the request path.
+      // A null dispatcher means init() either wasn't awaited or the
+      // dynamic import failed silently. Either is a bug — fail loud
+      // here so the operator gets a useful error instead of "TLS
+      // handshake failed: self-signed certificate" from undici later.
+      throw new Error(
+        'IbkrAdapter: TLS dispatcher not initialized. ' +
+          'Did you await brokerService.init() at startup?',
+      );
+    }
+    return { dispatcher: this._tlsDispatcher };
   }
 
   private _tlsDispatcher: unknown = null;
-  private get tlsDispatcher(): unknown {
-    return this._tlsDispatcher;
-  }
 
   /** Lazily build the undici dispatcher. Only used when
    *  allowSelfSignedTls is true; called from init() so the dispatcher
-   *  exists before any request is made. */
+   *  exists before any request is made. undici is a declared server
+   *  dependency (oracle-web/server/package.json); ESM dynamic import
+   *  keeps it out of the test runner's path since tests set
+   *  allowSelfSignedTls=false. */
   private async ensureTlsDispatcher(): Promise<void> {
     if (!this.cfg.allowSelfSignedTls) return;
     if (this._tlsDispatcher !== null) return;
-    // ESM dynamic import — `require` is unavailable in this codebase
-    // (server is "type": "module" / NodeNext). Importing undici at module
-    // scope was an option but adds a hard dep edge for tests that don't
-    // need it; lazy-import keeps adapter construction cheap.
-    // Suppress the type-resolution error: undici ships with Node 18+ but
-    // isn't a declared dependency in package.json. The shape we use
-    // (Agent class with a constructor taking { connect: { rejectUnauthorized } })
-    // has been stable for years.
-    const undici = (await import(/* @vite-ignore */ 'undici' as string)) as {
-      Agent: new (opts: unknown) => unknown;
-    };
+    const undici = await import('undici');
     this._tlsDispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
   }
 }
