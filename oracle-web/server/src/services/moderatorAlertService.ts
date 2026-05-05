@@ -191,6 +191,84 @@ function extractBackups(bodyLines: string[]): ModeratorBackup[] {
 }
 
 /**
+ * Try to parse a chat-message body as a moderator alert.
+ *
+ * STT-Shirley publishes Double Down alerts directly in income_trader_chat,
+ * not in the moderator-alert pages we scrape. The 2026-05-04 CLNN miss and
+ * 2026-05-05 BLZE miss both traced to this gap: the body has the same
+ * `Signal: $X / Risk Zone: $Y / Target: $Z` shape as a real alert, but our
+ * parser only ran against the room-level pages. This helper lifts a
+ * structurally-alert chat post into the same `ModeratorPost` shape so
+ * `incomeTraderChatService` can re-emit it through `moderatorAlertService`
+ * and downstream consumers (rawStreamService -> stock_o_bot) see one
+ * normalised `mod_alert` event regardless of where the moderator typed it.
+ *
+ * Returns null when:
+ * - the body's first classified line isn't `alert` or `double_down`
+ *   (we don't lift random "$BLZE Signal: $7" mentions from non-moderators
+ *   even when their author is on the allowlist);
+ * - the body lacks a Signal: line entirely (extractSignal returns null).
+ *
+ * The caller is expected to gate by author allowlist before invoking. This
+ * function is content-based only.
+ */
+export function parseChatBodyAsAlert(
+  body: string,
+  author: string,
+  postedAt: string,
+): ModeratorPost | null {
+  // Chat bodies arrive as a single line (or a small handful) with the
+  // Signal:/Risk Zone:/Target: labels embedded mid-sentence. The existing
+  // parser is line-anchored, so normalise: insert a newline before each
+  // recognised label, and translate the semicolon variant of "Risk Zone;"
+  // (a known STT-Shirley typo: "Risk Zone; $7.55") to the colon form the
+  // RISK_LINE_RE expects.
+  const normalised = body
+    .replace(/\bSignal:/gi, '\nSignal:')
+    .replace(/\bRisk\s*Zone\s*[:;]/gi, '\nRisk Zone:')
+    .replace(/\bTarget:/gi, '\nTarget:')
+    .replace(/\bBackups?:/gi, '\nBackups:')
+    .replace(/\bBackup\s+Ideas?:/gi, '\nBackup Ideas:');
+
+  const lines = normalised
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return null;
+
+  const titleIdx = findTitleIndex(lines);
+  const postLines = lines.slice(titleIdx);
+  const title = postLines[0];
+  const kind = classify(title);
+
+  // Only lift posts that *look* like alerts. Casual chat that happens to
+  // contain "$BLZE Signal: $7" without a known title prefix would match
+  // extractSignal but classify as `other` — those stay in chat-only land.
+  if (kind !== 'alert' && kind !== 'double_down') {
+    return null;
+  }
+
+  const signal = extractSignal(postLines);
+  // A Double Down post can validly have a null signal (re-confirms the
+  // original). But an `alert`-classified one without a Signal: block is
+  // more likely a mis-classified discussion of an old alert; skip it.
+  if (kind === 'alert' && signal === null) {
+    return null;
+  }
+
+  return {
+    title,
+    kind,
+    author,
+    postedAt,
+    body: postLines.slice(1).join('\n'),
+    signal,
+    backups: extractBackups(postLines),
+    symbols: extractAllTickers(postLines),
+  };
+}
+
+/**
  * Parse the Daily Market Profits room's rendered innerText into posts.
  *
  * Each post ends with a 4-line footer: type label, room list, author, and a
