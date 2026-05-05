@@ -6,6 +6,10 @@ import {
   probeIncomeTraderChat,
   probeFloatMap,
   probeSectorHotness,
+  probeBrokerAccount,
+  probeRecordingDisk,
+  probePolygonApi,
+  probeAlpacaIexBars,
   type ProbeDeps,
 } from '../services/opsProbes.js';
 
@@ -79,5 +83,60 @@ describe('snapshot-based scraper probes', () => {
   it('returns unknown when fetchedAt is null (service hasn\'t polled yet)', async () => {
     const r = await probeModeratorAlerts(snap({ fetchedAt: null, error: null }));
     expect(r.status).toBe('unknown');
+  });
+});
+
+describe('active probes', () => {
+  it('broker_account ok when getAccount resolves', async () => {
+    const r = await probeBrokerAccount({ getAccount: async () => ({ cash: 1000, portfolioValue: 1000, buyingPower: 1000, settledCash: 1000, unsettledCash: 0 }) });
+    expect(r.status).toBe('ok');
+  });
+
+  it('broker_account red when getAccount throws twice (consecutive)', async () => {
+    let calls = 0;
+    const getAccount = async () => { calls++; throw new Error('500'); };
+    const failures = { broker_account: 1 };
+    const r = await probeBrokerAccount({ getAccount }, failures);
+    expect(r.status).toBe('red');
+    expect(calls).toBe(1);
+  });
+
+  it('broker_account warn on a single transient failure', async () => {
+    const r = await probeBrokerAccount({ getAccount: async () => { throw new Error('500'); } }, { broker_account: 0 });
+    expect(r.status).toBe('warn');
+  });
+
+  it('recording_disk ok when there is plenty of free space', async () => {
+    const r = await probeRecordingDisk({ availableBytes: 10 * 1024 ** 3, dirWritable: true });
+    expect(r.status).toBe('ok');
+  });
+
+  it('recording_disk red when free space below 1 GB', async () => {
+    const r = await probeRecordingDisk({ availableBytes: 500 * 1024 ** 2, dirWritable: true });
+    expect(r.status).toBe('red');
+  });
+
+  it('recording_disk red when dir not writable', async () => {
+    const r = await probeRecordingDisk({ availableBytes: 999_999_999_999, dirWritable: false });
+    expect(r.status).toBe('red');
+  });
+
+  it('polygon_api ok when fewer than 5 of last 10 calls failed', async () => {
+    const r = await probePolygonApi({ recent: Array(10).fill(0).map((_, i) => ({ ok: i < 8 })) });
+    expect(r.status).toBe('ok');
+  });
+
+  it('polygon_api red when 5+ of last 10 calls failed', async () => {
+    const r = await probePolygonApi({ recent: Array(10).fill(0).map((_, i) => ({ ok: i < 4 })) });
+    expect(r.status).toBe('red');
+  });
+
+  it('alpaca_iex_bars excludes 429s from the failure ratio', async () => {
+    const recent = [
+      ...Array(6).fill(0).map(() => ({ ok: false, status: 429 })),
+      ...Array(4).fill(0).map(() => ({ ok: true })),
+    ];
+    const r = await probeAlpacaIexBars({ recent });
+    expect(r.status).toBe('ok');
   });
 });
