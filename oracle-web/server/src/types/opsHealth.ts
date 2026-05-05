@@ -55,3 +55,20 @@ export interface OpsHealthSnapshot {
   asOf: string;
   probes: ProbeResult[];
 }
+
+/** Runtime-iterable allowlist that mirrors the `ProbeName` union. Use
+ *  this for query-param validation; the union itself is erased at runtime. */
+export const PROBE_NAMES: readonly ProbeName[] = [
+  'oracle_scraper',
+  'broker_account',
+  'recording_disk',
+  'ws_clients',
+  'moderator_alerts',
+  'income_trader_chat',
+  'float_map',
+  'sector_hotness',
+  'polygon_api',
+  'alpaca_iex_bars',
+  'ibkr_gateway',
+  'chrome_debug_port',
+] as const;

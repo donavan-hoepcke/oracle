@@ -26,6 +26,8 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        // Needed for /api/raw/stream WS upgrades (e.g. useOpsHealth hook).
+        ws: true,
       },
       '/ws': {
         target: 'ws://localhost:3001',

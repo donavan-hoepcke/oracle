@@ -284,6 +284,43 @@ describe('RawStreamService.bind() integration', () => {
     expect(captured[0].ts).toBe('2026-05-02T13:00:00.000Z');
   });
 
+  it('bindOpsMonitorService publishes ops_health events', () => {
+    const captured: Array<{ type: string; payload: unknown }> = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'ops_health') captured.push({ type: e.type, payload: e.payload });
+    });
+    let fire: ((snap: unknown) => void) | null = null;
+    const stub = {
+      onUpdate: (cb: (snap: unknown) => void) => {
+        fire = cb;
+        return () => {
+          fire = null;
+        };
+      },
+    };
+    rawStreamService.bindOpsMonitorService(stub);
+    expect(fire).not.toBeNull();
+    const fakeSnapshot = {
+      asOf: '2026-05-02T13:00:00.000Z',
+      probes: [
+        {
+          name: 'oracle_scraper',
+          status: 'ok',
+          lastProbeAt: '2026-05-02T13:00:00.000Z',
+          lastOkAt: '2026-05-02T13:00:00.000Z',
+          message: 'ok',
+          attemptedRecovery: false,
+          recoveredAt: null,
+          consecutiveFailures: 0,
+        },
+      ],
+    };
+    fire!(fakeSnapshot);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].type).toBe('ops_health');
+    expect(captured[0].payload).toEqual(fakeSnapshot);
+  });
+
   it('reset detaches all bindings and clears buffer + listeners', () => {
     rawStreamService.bindMessageService(messageService);
     rawStreamService.publish({ type: 'message', payload: { x: 1 } });

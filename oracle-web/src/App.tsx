@@ -2,12 +2,14 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useSignals } from './hooks/useSignals';
 import { useJournal } from './hooks/useJournal';
 import { useScanner } from './hooks/useScanner';
+import { useOpsHealth } from './hooks/useOpsHealth';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { StatusBar } from './components/StatusBar';
 import { ScannerPage } from './components/ScannerPage';
 import { SignalsPage } from './components/SignalsPage';
 import { JournalPage } from './components/JournalPage';
 import { BacktestPage } from './components/BacktestPage';
+import { HealthPage } from './components/HealthPage';
 import { SymbolDetailPage } from './components/SymbolDetailPage';
 import { PremarketSyncBanner } from './components/PremarketSyncBanner';
 
@@ -37,6 +39,7 @@ function App() {
     error: scannerError,
     refresh: scannerRefresh,
   } = useScanner();
+  const { snapshot: opsHealth } = useOpsHealth();
 
   const startScraper = async () => {
     try {
@@ -128,6 +131,12 @@ function App() {
             >
               Backtest
             </NavLink>
+            <NavLink
+              to="/health"
+              className={navLinkClass}
+            >
+              Health
+            </NavLink>
           </nav>
         </div>
       </header>
@@ -138,6 +147,7 @@ function App() {
         isConnected={isConnected}
         lastUpdate={lastUpdate}
         stockCount={stocks.length}
+        opsHealth={opsHealth}
       />
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
@@ -258,6 +268,7 @@ function App() {
             }
           />
           <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/health" element={<HealthPage />} />
           <Route path="/symbol/:ticker" element={<SymbolDetailPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -435,6 +435,24 @@ export class IbkrAdapter implements BrokerAdapter {
     if (!res.ok) throw new Error(`IBKR tickle failed: ${res.status}`);
   }
 
+  /** Probe the gateway's session state without side effects on our local
+   *  state. Returns the raw `iserver.authStatus` envelope from the tickle
+   *  endpoint, used by the ops-monitor to decide ok / red / re-auth.
+   *  Reuses the adapter's TLS dispatcher so self-signed-cert localhost
+   *  gateways don't 4xx from undici's strict TLS verification. */
+  async tickleAuthStatus(): Promise<{
+    iserver?: { authStatus?: { authenticated?: boolean } };
+  }> {
+    const res = await this.fetcher(`${this.cfg.baseUrl}/tickle`, {
+      method: 'POST',
+      ...this.tlsOptions(),
+    });
+    if (!res.ok) throw new Error(`IBKR tickle returned HTTP ${res.status}`);
+    return (await res.json()) as {
+      iserver?: { authStatus?: { authenticated?: boolean } };
+    };
+  }
+
   private async searchConid(symbol: string): Promise<ConidSearchResult[]> {
     const data = (await this.get(
       `/iserver/secdef/search?symbol=${encodeURIComponent(symbol)}&secType=STK`,

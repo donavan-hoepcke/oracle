@@ -1,4 +1,5 @@
-import { BotStatus, MarketStatus } from '../types';
+import { BotStatus, MarketStatus, OpsHealthSnapshot } from '../types';
+import { OpsHealthDots } from './OpsHealthDots';
 
 interface StatusBarProps {
   marketStatus: MarketStatus | null;
@@ -6,6 +7,7 @@ interface StatusBarProps {
   isConnected: boolean;
   lastUpdate: Date | null;
   stockCount: number;
+  opsHealth: OpsHealthSnapshot | null;
 }
 
 export function StatusBar({
@@ -14,6 +16,7 @@ export function StatusBar({
   isConnected,
   lastUpdate,
   stockCount,
+  opsHealth,
 }: StatusBarProps) {
   return (
     <div className="bg-gray-800 text-white px-4 py-2 flex items-center justify-between text-sm">
@@ -61,6 +64,9 @@ export function StatusBar({
             </span>
           </>
         )}
+
+        <div className="text-gray-400">|</div>
+        <OpsHealthDots snapshot={opsHealth} />
       </div>
 
       <div className="flex items-center gap-4">
