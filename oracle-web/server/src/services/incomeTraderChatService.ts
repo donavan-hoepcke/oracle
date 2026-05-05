@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { messageService } from './messageService.js';
+import { moderatorAlertService, parseChatBodyAsAlert } from './moderatorAlertService.js';
 
 export type TickerSection = 'moderator_pick' | 'community_mention';
 
@@ -366,6 +367,8 @@ class IncomeTraderChatService {
   }
 
   private applyChat(messages: IncomeTraderChatMessage[]): void {
+    const allowlist = config.bot.moderatorChatAllowlist;
+    const liftedPosts: import('./moderatorAlertService.js').ModeratorPost[] = [];
     for (const m of messages) {
       const hash = chatMessageHash(m);
       if (this.ingestedChatHashes.has(hash)) continue;
@@ -376,6 +379,18 @@ class IncomeTraderChatService {
         author: m.author,
         timestamp: m.postedAt,
       });
+      // Moderators (e.g., STT-Shirley) post Double Down alerts directly in
+      // chat rather than to the moderator-alert page. Lift those into the
+      // mod_alert event stream so downstream consumers see one normalised
+      // alert shape regardless of where the moderator typed it. Same
+      // (postedAt, title) dedup at the WS-emit boundary keeps duplicates
+      // out of stock_o_bot's journal.
+      if (!allowlist.includes(m.author)) continue;
+      const post = parseChatBodyAsAlert(m.body, m.author, m.postedAt);
+      if (post !== null) liftedPosts.push(post);
+    }
+    if (liftedPosts.length > 0) {
+      moderatorAlertService.ingestPosts(liftedPosts);
     }
     // Bound the dedupe set so it doesn't grow without limit across a long
     // session. The chat tail at any moment is well under this cap, so

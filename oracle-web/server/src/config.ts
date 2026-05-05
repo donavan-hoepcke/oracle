@@ -102,6 +102,16 @@ const configSchema = z.object({
           hydration_wait_ms: z.number().int().nonnegative().default(5_000),
         })
         .default({}),
+      // Authors whose chat messages should ALSO be parsed as
+      // moderator-alert posts when their body is alert-shaped. STT-Shirley
+      // publishes Double Down alerts directly in income_trader_chat; without
+      // this allowlist, those alerts only ever surface as `message` events
+      // and stock_o_bot's Haiku tier passes on them for lack of a structured
+      // mod_alert. The 2026-05-04 CLNN miss and 2026-05-05 BLZE miss both
+      // traced to this gap.
+      moderatorChatAllowlist: z
+        .array(z.string())
+        .default(['STT- Shirley', 'STT-Shirley', 'Tim Bohen']),
     })
     .default({}),
   execution: z
