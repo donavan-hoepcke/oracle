@@ -65,6 +65,15 @@ export interface BrokerOrder {
    * so we can grep upstream. Never used for control flow.
    */
   rawStatus?: string;
+  /**
+   * Broker's order-class indicator (Alpaca: `simple` | `bracket` | `oco`
+   * | `oto`). Used by reconciliation to filter to bot-originated trades
+   * (the bot only ever submits bracket entries) when scanning history
+   * for round-trips that happened across a process restart. Optional —
+   * adapters that can't surface this leave it undefined and the caller
+   * treats it as "unknown class, don't auto-attribute."
+   */
+  orderClass?: 'simple' | 'bracket' | 'oco' | 'oto';
 }
 
 /**

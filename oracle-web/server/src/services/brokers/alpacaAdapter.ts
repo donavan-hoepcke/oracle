@@ -297,6 +297,13 @@ function normalizeAlpacaStatus(
 
 function mapOrder(data: Record<string, unknown>): BrokerOrder {
   const rawStatus = data.status as string;
+  const rawClass = data.order_class as string | undefined;
+  // Only forward known order_class values; an unrecognized one stays
+  // undefined so reconcileWithBroker can treat it as "don't attribute."
+  const orderClass: BrokerOrder['orderClass'] | undefined =
+    rawClass === 'simple' || rawClass === 'bracket' || rawClass === 'oco' || rawClass === 'oto'
+      ? rawClass
+      : undefined;
   return {
     id: data.id as string,
     symbol: data.symbol as string,
@@ -309,5 +316,6 @@ function mapOrder(data: Record<string, unknown>): BrokerOrder {
     filledQty: data.filled_qty ? parseFloat(data.filled_qty as string) : null,
     filledAt: (data.filled_at as string | null) ?? null,
     submittedAt: (data.submitted_at as string | null) ?? null,
+    orderClass,
   };
 }

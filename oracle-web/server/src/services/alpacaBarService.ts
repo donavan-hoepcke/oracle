@@ -50,6 +50,13 @@ async function fetchAlpacaBarsWithFeed(
     },
   });
 
+  // Record outcome for the ops monitor's alpaca_iex_bars probe. The probe
+  // filters out 429s (rate limits) since they're transient and routine.
+  // Optional chaining + voided return so unit tests that don't import
+  // index.ts don't blow up here.
+  (globalThis as { __opsApiOutcomes?: { iex: (ok: boolean, status?: number) => void } })
+    .__opsApiOutcomes?.iex(response.ok, response.status);
+
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`${response.status} - ${errorText}`);
