@@ -80,7 +80,11 @@ describe('parseModeratorAlertText — signal embedded in Pre-Market Prep', () =>
 
 describe('parseModeratorAlertText — pre_market_prep without a signal', () => {
   it('still parses the post but leaves signal/backups empty', () => {
-    const text = `Pre-Market Prep
+    // Real Bohen prep titles always carry a date suffix; the parser's
+    // classify() now requires that suffix so a bare "Pre-Market Prep"
+    // (the room nav link) doesn't get scooped up as a fake title with
+    // page chrome as body content.
+    const text = `Pre-Market Prep 5-4-2026
 
 Just a heads up that we're watching the open today, no specific picks yet.
 
