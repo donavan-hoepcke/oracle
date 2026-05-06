@@ -102,6 +102,17 @@ const configSchema = z.object({
           hydration_wait_ms: z.number().int().nonnegative().default(5_000),
         })
         .default({}),
+      alpaca_bars: z
+        .object({
+          // Per-rolling-minute budget for Alpaca's bar API. Free-tier IEX
+          // caps at ~200/min; default 180 leaves 10% headroom. SIP-tier
+          // accounts can raise this substantially.
+          rate_per_min: z.number().positive().default(180),
+          // Max concurrent burst above the steady refill rate. Default
+          // gives ~10s worth of fast fires before the limiter kicks in.
+          burst: z.number().positive().default(30),
+        })
+        .default({}),
       // Authors whose chat messages should ALSO be parsed as
       // moderator-alert posts when their body is alert-shaped. STT-Shirley
       // publishes Double Down alerts directly in income_trader_chat; without

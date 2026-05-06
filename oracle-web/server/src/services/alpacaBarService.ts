@@ -1,5 +1,30 @@
-import { alpacaApiKeyId, alpacaApiSecretKey, alpacaDataFeed } from '../config.js';
+import { alpacaApiKeyId, alpacaApiSecretKey, alpacaDataFeed, config } from '../config.js';
 import { Bar } from './indicatorService.js';
+import { AlpacaRateLimiter } from './alpacaRateLimiter.js';
+
+// Lazy singleton so every fetch path (1m bars, 5m bars, sector ETFs,
+// regime, RCT lookups) shares one budget. The lazy init dodges
+// import-time crashes in test files whose `vi.mock('../config.js')`
+// doesn't define `bot.alpaca_bars` — the limiter is only constructed on
+// first real fetch, and tests that mock the bar-fetch boundary higher up
+// never trigger it. Defaults match config schema in case `bot.alpaca_bars`
+// is partially defined.
+let limiter: AlpacaRateLimiter | null = null;
+function getLimiter(): AlpacaRateLimiter {
+  if (limiter) return limiter;
+  const cfg = (config as { bot?: { alpaca_bars?: { rate_per_min?: number; burst?: number } } })
+    .bot?.alpaca_bars;
+  limiter = new AlpacaRateLimiter({
+    ratePerMin: cfg?.rate_per_min ?? 180,
+    burst: cfg?.burst ?? 30,
+  });
+  return limiter;
+}
+
+/** Diagnostic accessor — used by tests and (next iteration) an ops probe. */
+export function getAlpacaRateLimiterStats() {
+  return getLimiter().getStats();
+}
 
 /** @deprecated Use `Bar` from indicatorService instead */
 export type AlpacaBar = Bar;
@@ -43,6 +68,13 @@ async function fetchAlpacaBarsWithFeed(
   const baseUrl = 'https://data.alpaca.markets/v2/stocks';
   const url = `${baseUrl}/${symbol}/bars?timeframe=${timeframe}&start=${startStr}&end=${endStr}&feed=${feed}&limit=10000`;
 
+  // Park here until a token is available. On a cold start with 50+ symbols
+  // this serializes the burst into the configured per-minute budget;
+  // steady-state polls flow through immediately because tokens refill
+  // faster than we consume them.
+  const rateLimiter = getLimiter();
+  await rateLimiter.acquire();
+
   const response = await fetch(url, {
     headers: {
       'APCA-API-KEY-ID': alpacaApiKeyId,
@@ -56,6 +88,18 @@ async function fetchAlpacaBarsWithFeed(
   // index.ts don't blow up here.
   (globalThis as { __opsApiOutcomes?: { iex: (ok: boolean, status?: number) => void } })
     .__opsApiOutcomes?.iex(response.ok, response.status);
+
+  // 429 means our budget estimate is off (or someone outside this process
+  // shares the API key). Empty the bucket and set a penalty so subsequent
+  // callers wait through the rolling-minute window rather than re-firing
+  // into a closed door. Honor Retry-After when present.
+  if (response.status === 429) {
+    const retryAfterHeader = response.headers.get('retry-after');
+    const retryAfterMs = retryAfterHeader
+      ? Math.max(1000, Number.parseFloat(retryAfterHeader) * 1000)
+      : 5000;
+    rateLimiter.notifyRateLimited(retryAfterMs);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
