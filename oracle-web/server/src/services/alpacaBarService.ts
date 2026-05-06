@@ -26,6 +26,25 @@ export function getAlpacaRateLimiterStats() {
   return getLimiter().getStats();
 }
 
+// Short-TTL cache so concurrent callers (price-poll cycle + /api/scanner +
+// /api/trade-candidates all running in parallel) don't each fire their own
+// fetch for the same symbol+timeframe. Keyed on (symbol|timeframe|lookback).
+// 5s TTL is short enough that the data stays fresh through a 30s polling
+// cycle, but long enough to dedupe the burst of fetches that arrives within
+// a few hundred ms of each other when an HTTP handler calls into the rule
+// engine while the price-poll cycle is also running.
+const BAR_CACHE_TTL_MS = 5_000;
+interface CacheEntry {
+  ts: number;
+  bars: Bar[];
+}
+const barCache = new Map<string, CacheEntry>();
+const barInflight = new Map<string, Promise<Bar[]>>();
+
+function cacheKey(symbol: string, timeframe: string, lookbackMinutes: number, feed: string): string {
+  return `${symbol}|${timeframe}|${lookbackMinutes}|${feed}`;
+}
+
 /** @deprecated Use `Bar` from indicatorService instead */
 export type AlpacaBar = Bar;
 
@@ -58,6 +77,36 @@ async function fetchAlpacaBarsWithFeed(
     return [];
   }
 
+  // Cache hit on a fresh entry — return immediately, skip the rate limiter
+  // and the network entirely. This is the load-shedding path for concurrent
+  // callers asking for the same bars within the TTL.
+  const key = cacheKey(symbol, timeframe, lookbackMinutes, feed);
+  const cached = barCache.get(key);
+  if (cached && Date.now() - cached.ts < BAR_CACHE_TTL_MS) {
+    return cached.bars;
+  }
+  // In-flight dedupe: if a fetch for the same key is already running,
+  // wait on its promise rather than firing a second HTTP request.
+  const inflight = barInflight.get(key);
+  if (inflight) return inflight;
+
+  const fetchPromise = doFetchAlpacaBars(symbol, timeframe, lookbackMinutes, feed);
+  barInflight.set(key, fetchPromise);
+  try {
+    const bars = await fetchPromise;
+    barCache.set(key, { ts: Date.now(), bars });
+    return bars;
+  } finally {
+    barInflight.delete(key);
+  }
+}
+
+async function doFetchAlpacaBars(
+  symbol: string,
+  timeframe: string,
+  lookbackMinutes: number,
+  feed: string
+): Promise<Bar[]> {
   const now = new Date();
   const start = new Date(now.getTime() - lookbackMinutes * 60 * 1000);
 

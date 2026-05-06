@@ -64,9 +64,12 @@ bot:
     # headroom for clock skew and any out-of-process callers. Bump to
     # 500+ if upgraded to the SIP feed.
     rate_per_min: 180
-    # Allow a short burst (e.g. cold-start price-poll cycle warming up
-    # caches) before the limiter starts gating callers.
-    burst: 30
+    # Burst capacity has to cover an on-demand /api/scanner request,
+    # which fires ~40 parallel bar fetches (RCT + ORB across the
+    # watchlist). 80 lets that complete in one burst without falling
+    # back to refill-paced waits, while sustained throughput is still
+    # capped by rate_per_min.
+    burst: 80
   # Authors whose chat messages we ALSO try to parse as moderator alerts
   # when the body is alert-shaped (Signal:/Risk Zone:/Target:). STT-Shirley
   # posts Double Downs only in chat; without this allowlist, those alerts
