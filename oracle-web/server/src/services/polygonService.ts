@@ -50,6 +50,11 @@ export async function fetchBars(
         'Authorization': `Bearer ${polygonApiKey}`,
       },
     });
+    // Record outcome for the ops monitor's polygon_api probe. Optional
+    // chaining + voided return so this is a no-op when the shim is not
+    // installed (e.g. in unit tests that don't import index.ts).
+    (globalThis as { __opsApiOutcomes?: { polygon: (ok: boolean, status?: number) => void } })
+      .__opsApiOutcomes?.polygon(response.ok, response.status);
     if (!response.ok) {
       console.error(`Polygon API error for ${symbol}: ${response.status}`);
       return [];

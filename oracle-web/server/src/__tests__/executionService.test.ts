@@ -916,4 +916,212 @@ describe('ExecutionService', () => {
       expect(ledger[0].exitReason).toBe('trailing_stop');
     });
   });
+
+  describe('detectOrphanedRoundTrips', () => {
+    beforeEach(() => {
+      vi.mocked(tradeFilterService.filterCandidate).mockReturnValue({
+        passed: true,
+        reason: null,
+      });
+    });
+
+    it('synthesizes a ledger entry for a bracket round-trip that completed across a restart', async () => {
+      // Bot has nothing in activeTrades or ledger (fresh start). Broker
+      // history shows a complete bracket round-trip from earlier today.
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([
+        {
+          id: 'buy-1',
+          symbol: 'BLZE',
+          status: 'filled',
+          side: 'buy',
+          filledAvgPrice: 7.66,
+          filledQty: 13,
+          filledAt: '2026-05-05T17:48:18Z',
+          submittedAt: '2026-05-05T17:48:00Z',
+          orderClass: 'bracket',
+        },
+        {
+          id: 'sell-1',
+          symbol: 'BLZE',
+          status: 'filled',
+          side: 'sell',
+          filledAvgPrice: 7.65,
+          filledQty: 13,
+          filledAt: '2026-05-05T17:48:21Z',
+          submittedAt: '2026-05-05T17:48:18Z',
+          orderClass: 'bracket',
+        },
+      ]);
+
+      await service.onPriceCycle([], []);
+
+      const ledger = service.getLedger();
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0].symbol).toBe('BLZE');
+      expect(ledger[0].entryPrice).toBe(7.66);
+      expect(ledger[0].exitPrice).toBe(7.65);
+      expect(ledger[0].shares).toBe(13);
+      expect(ledger[0].pnl).toBeCloseTo((7.65 - 7.66) * 13, 5);
+      expect(ledger[0].exitDetail).toContain('Orphaned round-trip');
+      expect(ledger[0].exitDetail).toContain('buy-1');
+      expect(ledger[0].exitDetail).toContain('sell-1');
+    });
+
+    it('skips manual non-bracket trades so user-placed orders are not attributed to the bot', async () => {
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([
+        {
+          id: 'manual-buy',
+          symbol: 'AAPL',
+          status: 'filled',
+          side: 'buy',
+          filledAvgPrice: 200,
+          filledQty: 5,
+          filledAt: '2026-05-05T15:00:00Z',
+          submittedAt: '2026-05-05T15:00:00Z',
+          orderClass: 'simple',
+        },
+        {
+          id: 'manual-sell',
+          symbol: 'AAPL',
+          status: 'filled',
+          side: 'sell',
+          filledAvgPrice: 201,
+          filledQty: 5,
+          filledAt: '2026-05-05T15:30:00Z',
+          submittedAt: '2026-05-05T15:30:00Z',
+          orderClass: 'simple',
+        },
+      ]);
+
+      await service.onPriceCycle([], []);
+      expect(service.getLedger()).toHaveLength(0);
+    });
+
+    it('does not synthesize an entry for a buy without a matching sell (open position)', async () => {
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([
+        {
+          id: 'buy-only',
+          symbol: 'XYZ',
+          status: 'filled',
+          side: 'buy',
+          filledAvgPrice: 10,
+          filledQty: 50,
+          filledAt: '2026-05-05T17:00:00Z',
+          submittedAt: '2026-05-05T17:00:00Z',
+          orderClass: 'bracket',
+        },
+      ]);
+
+      await service.onPriceCycle([], []);
+      expect(service.getLedger()).toHaveLength(0);
+    });
+
+    it('does not double-attribute when the round-trip is already in the ledger', async () => {
+      service.hydrateLedger([
+        {
+          symbol: 'BLZE',
+          strategy: 'momentum_continuation',
+          entryPrice: 7.66,
+          entryTime: '2026-05-05T17:48:18.000Z' as unknown as Date,
+          exitPrice: 7.65,
+          exitTime: '2026-05-05T17:48:21.000Z' as unknown as Date,
+          shares: 13,
+          riskPerShare: 0,
+          pnl: -0.13,
+          pnlPct: -0.13,
+          rMultiple: 0,
+          exitReason: 'trailing_stop',
+          exitDetail: 'pre-existing',
+          rationale: [],
+        },
+      ]);
+      mockOrderService.getPositions.mockResolvedValue([]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([
+        {
+          id: 'buy-1',
+          symbol: 'BLZE',
+          status: 'filled',
+          side: 'buy',
+          filledAvgPrice: 7.66,
+          filledQty: 13,
+          filledAt: '2026-05-05T17:48:18Z',
+          submittedAt: '2026-05-05T17:48:00Z',
+          orderClass: 'bracket',
+        },
+        {
+          id: 'sell-1',
+          symbol: 'BLZE',
+          status: 'filled',
+          side: 'sell',
+          filledAvgPrice: 7.65,
+          filledQty: 13,
+          filledAt: '2026-05-05T17:48:21Z',
+          submittedAt: '2026-05-05T17:48:18Z',
+          orderClass: 'bracket',
+        },
+      ]);
+
+      await service.onPriceCycle([], []);
+      expect(service.getLedger()).toHaveLength(1);
+      expect(service.getLedger()[0].exitDetail).toBe('pre-existing');
+    });
+
+    it('skips symbols with an active trade so detectBrokerDrivenCloses owns them', async () => {
+      // First, get AGAE into activeTrades with status=filled.
+      const candidates = [makeCandidate('AGAE', 0.50, 0.45, 0.94)];
+      await service.onPriceCycle(candidates, [makeStockState('AGAE', 0.50)]);
+      mockOrderService.getOrder.mockResolvedValue({
+        id: 'order-1',
+        status: 'filled',
+        filledAvgPrice: 0.5,
+        filledQty: 100,
+      });
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.5)]);
+      expect(service.getActiveTrades()).toHaveLength(1);
+
+      // Now broker history shows AGAE round-trips — but because AGAE is
+      // active, detectOrphanedRoundTrips must NOT synthesize a duplicate.
+      mockOrderService.getPositions.mockResolvedValue([
+        { symbol: 'AGAE', qty: 100, avgEntryPrice: 0.5, currentPrice: 0.5, marketValue: 50, unrealizedPl: 0 },
+      ]);
+      mockOrderService.getOpenOrders.mockResolvedValue([]);
+      mockOrderService.getOrdersSince.mockResolvedValue([
+        {
+          id: 'historical-buy',
+          symbol: 'AGAE',
+          status: 'filled',
+          side: 'buy',
+          filledAvgPrice: 0.5,
+          filledQty: 100,
+          filledAt: '2026-05-05T13:00:00Z',
+          submittedAt: '2026-05-05T13:00:00Z',
+          orderClass: 'bracket',
+        },
+        {
+          id: 'historical-sell',
+          symbol: 'AGAE',
+          status: 'filled',
+          side: 'sell',
+          filledAvgPrice: 0.55,
+          filledQty: 100,
+          filledAt: '2026-05-05T13:30:00Z',
+          submittedAt: '2026-05-05T13:30:00Z',
+          orderClass: 'bracket',
+        },
+      ]);
+
+      await service.onPriceCycle([], [makeStockState('AGAE', 0.5)]);
+
+      // No new ledger entry — AGAE is owned by detectBrokerDrivenCloses now.
+      expect(service.getLedger()).toHaveLength(0);
+      expect(service.getActiveTrades()).toHaveLength(1);
+    });
+  });
 });

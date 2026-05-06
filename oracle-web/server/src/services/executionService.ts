@@ -333,6 +333,13 @@ export class ExecutionService {
     // with its real fill price, not as an orphan.
     await this.detectBrokerDrivenCloses(positions, openOrders);
 
+    // Step 1b: detect round-trips that completed entirely outside the bot's
+    // visibility — a buy and matching sell that both filled while the bot
+    // was restarting (or before this cycle's `detectBrokerDrivenCloses`
+    // had the trade in activeTrades). Without this, brackets that fire
+    // mid-restart leave no ledger trace at all.
+    await this.detectOrphanedRoundTrips();
+
     // A position with an open sell order means a close is already in flight
     // (either submitted by us this cycle, or queued by the broker for the next
     // session). Adopting it here would clobber the in-flight exit and double-
@@ -433,6 +440,128 @@ export class ExecutionService {
    *     If no sell fill is visible yet (close just happened, broker
    *     hasn't surfaced it), skip and retry next cycle.
    */
+  /**
+   * Find round-trips (buy + matching sell) that completed entirely outside
+   * the bot's in-memory state — typically because the bot was restarting
+   * while a bracketed trade ran its full course.
+   *
+   * Strategy: pull today's filled orders, group by symbol, pair each buy
+   * with the soonest later sell of equal qty. For each pair the bot has
+   * neither an activeTrade nor a ledger entry for (keyed on the buy's
+   * filledAt), synthesize a TradeLedgerEntry using the real fill prices
+   * and route through recordClosedTrade so it lands in both the in-memory
+   * ledger and the eager-write JSONL.
+   *
+   * Filter: only consider buy orders whose `orderClass === 'bracket'`.
+   * The bot only ever submits bracket entries, so this excludes manual
+   * trades the operator placed via the broker's UI from being attributed
+   * to the bot. (Adapters that don't surface orderClass leave the field
+   * undefined; those orders are skipped.)
+   */
+  private async detectOrphanedRoundTrips(): Promise<void> {
+    const dayStart = new Date();
+    dayStart.setUTCHours(0, 0, 0, 0);
+    let orders: BrokerOrder[];
+    try {
+      orders = await brokerService.getOrdersSince(dayStart.toISOString(), 'closed');
+    } catch (err) {
+      console.warn(
+        `detectOrphanedRoundTrips: getOrdersSince failed: ${err instanceof Error ? err.message : err}`,
+      );
+      return;
+    }
+
+    const filled = orders.filter(
+      (o) => o.status === 'filled' && o.filledAvgPrice !== null && o.filledAt !== null && o.filledQty !== null,
+    );
+
+    // Group fills by symbol. Sort each group ascending by fill time so a
+    // buy is paired with the earliest subsequent sell.
+    const bySymbol = new Map<string, BrokerOrder[]>();
+    for (const o of filled) {
+      const arr = bySymbol.get(o.symbol) ?? [];
+      arr.push(o);
+      bySymbol.set(o.symbol, arr);
+    }
+    for (const arr of bySymbol.values()) {
+      arr.sort((a, b) => new Date(a.filledAt as string).getTime() - new Date(b.filledAt as string).getTime());
+    }
+
+    // Build the existing-ledger key set so we don't double-attribute. We
+    // key on symbol+entryTime since that's what hydrateLedger dedupes on.
+    const ledgerKeys = new Set(
+      this.ledger.map((e) => `${e.symbol}|${new Date(e.entryTime).toISOString()}`),
+    );
+    const activeSymbols = new Set(this.activeTrades.map((t) => t.symbol));
+
+    for (const [symbol, fills] of bySymbol) {
+      // Active trades for a symbol are tracked elsewhere — leave alone so
+      // detectBrokerDrivenCloses doesn't fight us.
+      if (activeSymbols.has(symbol)) continue;
+
+      const claimedSellIds = new Set<string>();
+      for (const buy of fills) {
+        if (buy.side !== 'buy') continue;
+        // Only attribute trades the bot would have placed. Bracket entries
+        // are the bot's only submission path today; anything else (a manual
+        // simple market order from the operator's web UI) gets skipped.
+        if (buy.orderClass !== 'bracket') continue;
+
+        const buyTime = new Date(buy.filledAt as string).toISOString();
+        const key = `${symbol}|${buyTime}`;
+        if (ledgerKeys.has(key)) continue;
+
+        // Find the earliest sell after this buy with matching qty.
+        const buyQty = buy.filledQty as number;
+        const sell = fills.find(
+          (o) =>
+            o.side === 'sell' &&
+            !claimedSellIds.has(o.id) &&
+            (o.filledAt as string) > (buy.filledAt as string) &&
+            Math.abs((o.filledQty ?? 0) - buyQty) < 0.01,
+        );
+        if (!sell || sell.filledAvgPrice === null) {
+          // Buy without a matching sell — position is presumably still
+          // open at the broker, so leave it for `reconcileWithBroker` to
+          // adopt rather than synthesizing a half-trade here.
+          continue;
+        }
+
+        claimedSellIds.add(sell.id);
+        ledgerKeys.add(key);
+
+        const entryPrice = buy.filledAvgPrice as number;
+        const exitPrice = sell.filledAvgPrice;
+        const shares = buyQty;
+        const pnl = (exitPrice - entryPrice) * shares;
+        const pnlPct = entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+        // No risk reference for orphans (entry-time stop is unknown), so
+        // riskPerShare and rMultiple stay 0 — the journal still has the
+        // raw $ P&L for these.
+        this.recordClosedTrade({
+          symbol,
+          strategy: 'momentum_continuation',
+          entryPrice,
+          entryTime: new Date(buy.filledAt as string),
+          exitPrice,
+          exitTime: new Date(sell.filledAt as string),
+          shares,
+          riskPerShare: 0,
+          pnl,
+          pnlPct,
+          rMultiple: 0,
+          exitReason: 'eod',
+          exitDetail: `Orphaned round-trip reconciled from broker history (buy ${buy.id}, sell ${sell.id})`,
+          rationale: ['Round-trip completed outside bot visibility (likely across a process restart)'],
+        });
+
+        console.log(
+          `[reconcile] orphan round-trip ${symbol} ${shares}@${entryPrice.toFixed(3)} -> ${exitPrice.toFixed(3)} pnl=${pnl.toFixed(2)}`,
+        );
+      }
+    }
+  }
+
   private async detectBrokerDrivenCloses(
     positions: BrokerPosition[],
     openOrders: BrokerOrder[],
