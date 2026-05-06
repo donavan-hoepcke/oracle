@@ -359,4 +359,147 @@ describe('mergeAndDedupe', () => {
     const merged = mergeAndDedupe([first, second, dup]);
     expect(merged.map((p) => p.title)).toEqual(['alpha', 'beta']);
   });
+
+  it('collapses same-day prep duplicates and prefers the longer body', () => {
+    const sparse: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-5-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-05T04:37:00.000Z',
+      body: '',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const fat: ModeratorPost = {
+      title: 'Pre-Market Prep',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-05T04:38:00.000Z',
+      body: '$PN Signal: $6.01 Risk Zone: $5.70 Target: high $6s\nBackups: $CNSP $CLNN',
+      signal: null,
+      backups: [],
+      symbols: ['PN', 'CNSP', 'CLNN'],
+    };
+    const merged = mergeAndDedupe([sparse, fat]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].body.length).toBeGreaterThan(0);
+    expect(merged[0].title).toBe('Pre-Market Prep');
+  });
+
+  it('does NOT collapse two distinct alerts on the same day', () => {
+    const a: ModeratorPost = {
+      title: 'Daily Market Profits Alert 5-5-2026',
+      kind: 'alert',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-05T13:30:00.000Z',
+      body: '$BLZE',
+      signal: null,
+      backups: [],
+      symbols: ['BLZE'],
+    };
+    const b: ModeratorPost = {
+      title: 'Daily Market Profits Alert 5-5-2026 (afternoon)',
+      kind: 'alert',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-05T18:00:00.000Z',
+      body: '$VRDN',
+      signal: null,
+      backups: [],
+      symbols: ['VRDN'],
+    };
+    const merged = mergeAndDedupe([a, b]);
+    expect(merged).toHaveLength(2);
+  });
+});
+
+describe('classify guards against page-nav titles', () => {
+  it('does NOT classify a bare "Pre-Market Prep" without a date as pre_market_prep', () => {
+    // The page-nav left rail and the room dropdown both render the literal
+    // string "Pre-Market Prep" — without a date suffix this is a link, not
+    // a post. parseModeratorAlertText must not pick it up as a title.
+    const text = `Pre-Market Prep
+Some random page chrome
+Type
+DMP
+Tim Bohen
+May 5, 2026 4:37 AM
+`;
+    const posts = parseModeratorAlertText(text);
+    // Either zero posts or none classified as pre_market_prep.
+    expect(posts.find((p) => p.kind === 'pre_market_prep')).toBeUndefined();
+  });
+
+  it('classifies real prep titles like "Pre Market Prep Note 5-5-2026"', () => {
+    const text = `Pre Market Prep Note 5-5-2026
+Watching $PN signal $6.01
+Type
+DMP
+Tim Bohen
+May 5, 2026 4:37 AM
+`;
+    const posts = parseModeratorAlertText(text);
+    const prep = posts.find((p) => p.kind === 'pre_market_prep');
+    expect(prep).toBeDefined();
+    expect(prep?.title).toContain('5-5-2026');
+  });
+});
+
+describe('parseModeratorAlertText nav-menu and empty-body guards', () => {
+  // Reconstructs the exact failure mode reported in the
+  // 2026-05-05-prep-note-data-quality diagnosis: a post whose body
+  // ended up containing the StocksToTrade page-chrome (left-nav menu)
+  // because the parser slice happened to span it.
+  const navBody = [
+    'Pre-Market Prep',
+    'DMP Room',
+    'Masterclass',
+    'Pennystocking Framework 1',
+    'Pennystocking Framework 2',
+    'StocksToTrade Advisory',
+    'University Vault',
+    'StocksToTrade Platform',
+    'Control Panel',
+    'Download StocksToTrade',
+    'Web Platform Login',
+    'Tutorial Center',
+    'Type',
+    'DMP',
+    'Tim Bohen',
+    'May 5, 2026 4:37 AM',
+  ].join('\n');
+
+  it('drops a post whose body matches the nav-menu fingerprint', () => {
+    const posts = parseModeratorAlertText(navBody);
+    expect(posts).toHaveLength(0);
+  });
+
+  it('drops an empty-body prep post (parser failure mode from 2026-05-05 diagnosis)', () => {
+    const text = [
+      'Pre Market Prep Note 5-5-2026',
+      'Type',
+      'DMP',
+      'Tim Bohen',
+      'May 5, 2026 4:37 AM',
+    ].join('\n');
+    const posts = parseModeratorAlertText(text);
+    // Empty-body prep posts are parser artifacts (room view is collapsed,
+    // only the title made it into innerText). Drop so a later well-formed
+    // capture for the same day isn't shadowed.
+    expect(posts).toHaveLength(0);
+  });
+
+  it('preserves header-only Double Down notes (legitimate moderator pattern)', () => {
+    const text = [
+      'Double Down Note 4-23-2026',
+      'Type',
+      'DMP',
+      'Tim Bohen',
+      'Apr 23, 2026 10:00 AM',
+    ].join('\n');
+    const posts = parseModeratorAlertText(text);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].kind).toBe('double_down');
+    expect(posts[0].body).toBe('');
+  });
 });

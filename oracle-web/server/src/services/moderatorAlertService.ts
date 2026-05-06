@@ -66,6 +66,14 @@ const LOOSE_TICKER_RE = /\$([A-Z][A-Z0-9.-]{0,6})\b/;
 // like "$EFOI to fast to alert, but plenty of time ... 30 minutes in advance".
 const BACKUP_LINE_RE = /^\$([A-Z][A-Z0-9.-]{0,6})\s+(?:(.*?)\s+)?\$([\d.]+)(.*)?$/;
 
+// Real Bohen prep-note titles always carry a date suffix, e.g.
+//   "Pre Market Prep Note 5-5-2026"
+//   "Pre-Market Prep Note 04-29-2026"
+// A bare "Pre-Market Prep" with no date is the room's left-nav entry, not a
+// post — if classify() returned pre_market_prep on it, the parser walks
+// forward and treats the page chrome as body content.
+const PREP_TITLE_RE = /^pre[ -]market prep(?:\s+note)?\s+\d{1,2}-\d{1,2}-\d{2,4}/i;
+
 function classify(title: string): ModeratorPostKind {
   const t = title.toLowerCase();
   if (t.startsWith('daily market profits alert')) return 'alert';
@@ -75,9 +83,44 @@ function classify(title: string): ModeratorPostKind {
   // so downstream consumers can match the bot's mod_double_down_long rule.
   if (t.startsWith('double down') || t.startsWith('double-down')) return 'double_down';
   if (t.startsWith('backup ideas') || t.startsWith('backup idea')) return 'backups';
-  if (t.startsWith('pre market prep') || t.startsWith('pre-market prep')) return 'pre_market_prep';
+  if (PREP_TITLE_RE.test(title)) return 'pre_market_prep';
   if (t.startsWith('weekend resources')) return 'weekend_resources';
   return 'other';
+}
+
+// Distinctive substrings of the StocksToTrade page-chrome (left-nav menu +
+// help links) that appear together in a flat innerText dump. If a body
+// happens to capture this region instead of real post content, it will
+// contain most of these in close proximity. We use a "5-of-N or more"
+// threshold to be generous (any single phrase could appear in real
+// content; the cluster is the giveaway).
+const NAV_MENU_FINGERPRINTS = [
+  'DMP Room',
+  'Masterclass',
+  'Pennystocking Framework',
+  'StocksToTrade Advisory',
+  'University Vault',
+  'StocksToTrade Platform',
+  'Control Panel',
+  'Download StocksToTrade',
+  'Web Platform Login',
+  'Tutorial Center',
+  'STT Demos Replays',
+  'Basic Scans',
+  'Winners Channel',
+  'Notifications Set-Up',
+  'Share Your Feedback',
+  'Get Support',
+];
+
+function bodyLooksLikeNavMenu(body: string): boolean {
+  if (!body) return false;
+  let hits = 0;
+  for (const fp of NAV_MENU_FINGERPRINTS) {
+    if (body.includes(fp)) hits++;
+    if (hits >= 5) return true;
+  }
+  return false;
 }
 
 function extractAllTickers(lines: string[]): string[] {
@@ -330,12 +373,46 @@ export function parseModeratorAlertText(raw: string): ModeratorPost[] {
     // blocks as primary actionable alerts.
     const symbols = extractAllTickers(postLines);
 
+    const body = postLines.slice(1).join('\n');
+
+    // Guard against the parser scooping page-chrome as body content. This
+    // hits when the timestamp the parser found belongs to some other post
+    // but the slice between cursor and that footer happened to span the
+    // page's nav menu (e.g. on the pre-market-prep room where there are
+    // fewer posts to anchor the parser between). Better to drop the post
+    // entirely than to emit a phantom prep with menu strings as content.
+    if (bodyLooksLikeNavMenu(body)) {
+      console.warn(
+        `moderator-alerts: dropping post '${title}' (postedAt=${postedAt}) — body matched nav-menu fingerprint`,
+      );
+      cursor = tsIdx + 1;
+      continue;
+    }
+
+    // Empty-body prep posts are always a parser failure — Bohen's prep
+    // notes always carry actionable content (tickers, signal price, risk
+    // zone, target, backups). An empty-body capture means the post was
+    // rendered collapsed in the chat view and only the title made it into
+    // innerText. Drop here so the day-kind dedupe lets a later well-formed
+    // capture win instead of being shadowed by an empty stub.
+    //
+    // Other kinds (alert, double_down, backups) keep their empty-body
+    // semantics: moderators do post header-only notes for those, and
+    // dropping them would break the existing contract.
+    if (kind === 'pre_market_prep' && body.length === 0) {
+      console.warn(
+        `moderator-alerts: dropping prep post '${title}' (postedAt=${postedAt}) — empty body`,
+      );
+      cursor = tsIdx + 1;
+      continue;
+    }
+
     posts.push({
       title,
       kind,
       author,
       postedAt,
-      body: postLines.slice(1).join('\n'),
+      body,
       signal,
       backups,
       symbols,
@@ -452,15 +529,46 @@ export class ModeratorAlertService {
  * at the snapshot and at the WS-event boundary.
  */
 export function mergeAndDedupe(posts: ModeratorPost[]): ModeratorPost[] {
-  const seen = new Set<string>();
-  const out: ModeratorPost[] = [];
+  // Two-pass dedupe.
+  //
+  // First pass: collapse exact-duplicate (postedAt, title) tuples that
+  // arrive from multi-room scrapes — same post observed in two rooms
+  // should produce one record.
+  //
+  // Second pass: collapse same-day same-kind duplicates that have
+  // *different* titles (e.g. "Pre Market Prep Note 5-5-2026" from one
+  // room scrape and a generic "Pre-Market Prep" from another). When
+  // collapsing, keep the record with the longest body — that's the one
+  // most likely to have real content rather than a parser artifact.
+  const exactSeen = new Map<string, ModeratorPost>();
   for (const post of posts) {
     const key = `${post.postedAt ?? ''}|${post.title}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(post);
+    if (!exactSeen.has(key)) exactSeen.set(key, post);
   }
-  return out;
+  const dayKindSeen = new Map<string, ModeratorPost>();
+  const passthrough: ModeratorPost[] = [];
+  for (const post of exactSeen.values()) {
+    // Only collapse "same-day same-kind" for kinds that are canonically
+    // once-per-period: pre_market_prep (one prep note per session day),
+    // weekend_resources (one per weekend). Multiple alerts / double-downs
+    // / backup-idea posts in a single day ARE distinct events and must
+    // not be collapsed.
+    const collapseKinds: ModeratorPostKind[] = [
+      'pre_market_prep',
+      'weekend_resources',
+    ];
+    if (!collapseKinds.includes(post.kind)) {
+      passthrough.push(post);
+      continue;
+    }
+    const day = post.postedAt ? post.postedAt.slice(0, 10) : '';
+    const key = `${day}|${post.kind}`;
+    const existing = dayKindSeen.get(key);
+    if (!existing || (post.body?.length ?? 0) > (existing.body?.length ?? 0)) {
+      dayKindSeen.set(key, post);
+    }
+  }
+  return [...dayKindSeen.values(), ...passthrough];
 }
 
 export const moderatorAlertService = new ModeratorAlertService();
