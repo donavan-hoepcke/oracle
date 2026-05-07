@@ -523,7 +523,20 @@ export class ModeratorAlertService {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
         await page.waitForTimeout(cfg.hydration_wait_ms);
       }
-      return (await page.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
+      // innerText only captures *visible* text, not href attributes. Bohen's
+      // prep posts embed the Evernote share as an `<a href="https://lite
+      // .evernote.com/note/…">Today's Prep</a>` — without explicit href
+      // extraction, the URL never reaches `findEvernoteUrlForTitle` and
+      // enrichment silently no-ops. Append matching hrefs so the URL
+      // surfaces alongside the prose for downstream regex scans.
+      return (await page.evaluate(`(() => {
+        const innerText = (document.body && document.body.innerText) || '';
+        const hrefs = Array.from(document.querySelectorAll('a[href*="evernote.com/note"]'))
+          .map((a) => a.href)
+          .filter((h, i, arr) => arr.indexOf(h) === i)
+          .join('\\n');
+        return hrefs ? innerText + '\\n' + hrefs : innerText;
+      })()`)) as string;
     } finally {
       await browser.close();
     }
