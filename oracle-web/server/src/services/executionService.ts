@@ -292,7 +292,12 @@ export class ExecutionService {
     return priceMap;
   }
 
-  async onPriceCycle(candidates: TradeCandidate[], stocks: StockState[], regime?: RegimeSnapshot): Promise<void> {
+  async onPriceCycle(
+    candidates: TradeCandidate[],
+    stocks: StockState[],
+    regime?: RegimeSnapshot,
+    session: 'pre' | 'rth' | 'post' | 'closed' = 'rth',
+  ): Promise<void> {
     await this.refreshWashSaleSymbols();
     const positions = await this.reconcileWithBroker(stocks);
 
@@ -303,7 +308,7 @@ export class ExecutionService {
     await this.cancelStaleOrders();
     await this.manageFilled(stocks, positions);
     if (!this.enabled) return;
-    await this.evaluateNewEntries(candidates, account, reservedSymbols, regime);
+    await this.evaluateNewEntries(candidates, account, reservedSymbols, regime, session);
   }
 
   /**
@@ -787,6 +792,7 @@ export class ExecutionService {
     account: AccountState,
     reservedSymbols: Set<string>,
     regime?: RegimeSnapshot,
+    session: 'pre' | 'rth' | 'post' | 'closed' = 'rth',
   ): Promise<void> {
     // Rebuild rejection map each cycle so stale entries clear naturally.
     const currentCandidateSymbols = new Set(candidates.map((c) => c.symbol));
@@ -830,55 +836,113 @@ export class ExecutionService {
         continue;
       }
 
-      const size = tradeFilterService.calculatePositionSize(candidate, account);
+      let size = tradeFilterService.calculatePositionSize(candidate, account);
       if (size.shares <= 0) {
         this.recordRejection(candidate, 'position size rounded to 0 shares');
         continue;
       }
 
+      // Ext-hours scaling: cap position size at size_cap_pct of normal
+      // and widen the entry-time stop by stop_buffer_pct of risk to
+      // absorb thin-session slippage. RTH path is unchanged.
+      const isExt = session === 'pre' || session === 'post';
+      const extCfg = config.execution.extended_hours;
+      let workingStop = candidate.suggestedStop;
+      if (isExt) {
+        const cappedShares = Math.floor(size.shares * extCfg.size_cap_pct);
+        if (cappedShares <= 0) {
+          this.recordRejection(candidate, `ext-hours size cap rounded to 0 shares`);
+          continue;
+        }
+        const cappedCost = size.costBasis * (cappedShares / size.shares);
+        size = { shares: cappedShares, costBasis: cappedCost };
+        // Widen the stop further from entry by stop_buffer_pct of the
+        // original risk distance. For a long, that means a lower stop.
+        const riskDist = candidate.suggestedEntry - candidate.suggestedStop;
+        if (riskDist > 0) {
+          workingStop = candidate.suggestedStop - riskDist * extCfg.stop_buffer_pct;
+        }
+      }
+
       this.rejections.delete(candidate.symbol);
 
-      const useLimit =
-        candidate.setup === 'red_candle_theory' || candidate.setup === 'momentum_continuation';
-
       try {
-        // Bracket order: entry + target (limit-sell at suggestedTarget) +
-        // stop (stop-sell at suggestedStop). Submitted atomically — if a
-        // crash interrupts the bot after entry, the broker still has the
-        // OCO exit pair queued. tighten_stop later replaces just the
-        // stop leg via stopOrderId.
-        const bracket = await brokerService.submitBracketOrder({
-          symbol: candidate.symbol,
-          qty: size.shares,
-          side: 'buy',
-          type: useLimit ? 'limit' : 'market',
-          entryLimitPrice: useLimit ? candidate.suggestedEntry : undefined,
-          targetPrice: candidate.suggestedTarget,
-          stopPrice: candidate.suggestedStop,
-        });
-
-        this.activeTrades.push({
-          symbol: candidate.symbol,
-          strategy: candidate.setup,
-          entryPrice: candidate.suggestedEntry,
-          entryTime: new Date(),
-          shares: size.shares,
-          initialStop: candidate.suggestedStop,
-          currentStop: candidate.suggestedStop,
-          target: candidate.suggestedTarget,
-          riskPerShare: candidate.suggestedEntry - candidate.suggestedStop,
-          orderId: bracket.entry.id,
-          targetOrderId: bracket.target.id,
-          stopOrderId: bracket.stop.id,
-          // Broker stop leg starts at the entry-time stop. Trailing-stop
-          // replacement (manageFilled) will advance this monotonically.
-          lastBrokerStop: candidate.suggestedStop,
-          status: 'pending',
-          trailingState: 'initial',
-          maxFavorableR: 0,
-          pendingSince: new Date(),
-          rationale: [...candidate.rationale, `Score ${candidate.score.toFixed(0)} | ${candidate.setup}`],
-        });
+        if (isExt) {
+          // Ext-hours path: simple limit (Alpaca rejects market + bracket
+          // outside RTH). Bot manages stop/target in-process via
+          // manageFilled's legacy path — gated on null bracket-leg ids.
+          const entry = await brokerService.submitOrder({
+            symbol: candidate.symbol,
+            qty: size.shares,
+            side: 'buy',
+            type: 'limit',
+            limitPrice: candidate.suggestedEntry,
+            extendedHours: true,
+          });
+          this.activeTrades.push({
+            symbol: candidate.symbol,
+            strategy: candidate.setup,
+            entryPrice: candidate.suggestedEntry,
+            entryTime: new Date(),
+            shares: size.shares,
+            initialStop: workingStop,
+            currentStop: workingStop,
+            target: candidate.suggestedTarget,
+            riskPerShare: candidate.suggestedEntry - workingStop,
+            orderId: entry.id,
+            // Empty bracket-leg ids → manageFilled runs the in-process
+            // exit path (matches adopted-orphan trades).
+            targetOrderId: null,
+            stopOrderId: null,
+            lastBrokerStop: -Infinity,
+            status: 'pending',
+            trailingState: 'initial',
+            maxFavorableR: 0,
+            pendingSince: new Date(),
+            rationale: [
+              ...candidate.rationale,
+              `Score ${candidate.score.toFixed(0)} | ${candidate.setup}`,
+              `Ext-hours ${session} entry: ${(extCfg.size_cap_pct * 100).toFixed(0)}% size, +${(extCfg.stop_buffer_pct * 100).toFixed(0)}% stop buffer`,
+            ],
+          });
+        } else {
+          // RTH path: bracket OCO entry. Broker holds target+stop legs
+          // server-side so a bot crash after entry still has the exits
+          // queued. tighten_stop later replaces just the stop leg.
+          const useLimit =
+            candidate.setup === 'red_candle_theory' || candidate.setup === 'momentum_continuation';
+          const bracket = await brokerService.submitBracketOrder({
+            symbol: candidate.symbol,
+            qty: size.shares,
+            side: 'buy',
+            type: useLimit ? 'limit' : 'market',
+            entryLimitPrice: useLimit ? candidate.suggestedEntry : undefined,
+            targetPrice: candidate.suggestedTarget,
+            stopPrice: candidate.suggestedStop,
+          });
+          this.activeTrades.push({
+            symbol: candidate.symbol,
+            strategy: candidate.setup,
+            entryPrice: candidate.suggestedEntry,
+            entryTime: new Date(),
+            shares: size.shares,
+            initialStop: candidate.suggestedStop,
+            currentStop: candidate.suggestedStop,
+            target: candidate.suggestedTarget,
+            riskPerShare: candidate.suggestedEntry - candidate.suggestedStop,
+            orderId: bracket.entry.id,
+            targetOrderId: bracket.target.id,
+            stopOrderId: bracket.stop.id,
+            // Broker stop leg starts at the entry-time stop. Trailing-stop
+            // replacement (manageFilled) will advance this monotonically.
+            lastBrokerStop: candidate.suggestedStop,
+            status: 'pending',
+            trailingState: 'initial',
+            maxFavorableR: 0,
+            pendingSince: new Date(),
+            rationale: [...candidate.rationale, `Score ${candidate.score.toFixed(0)} | ${candidate.setup}`],
+          });
+        }
 
         account.openPositionCount++;
         account.deployedCapital += size.costBasis;

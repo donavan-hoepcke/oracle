@@ -81,6 +81,10 @@ export interface BrokerOrder {
  * permitted on market orders. Using a union (vs an optional field) makes
  * "limit without a price" a compile error rather than a runtime check that
  * has to live in every adapter.
+ *
+ * `extendedHours` is only valid on the `limit` variant — Alpaca rejects
+ * pre/post-market market orders. Adapters that don't support extended
+ * hours throw on `extendedHours: true` rather than silently dropping it.
  */
 export type SubmitOrderParams =
   | {
@@ -95,6 +99,7 @@ export type SubmitOrderParams =
       side: 'buy' | 'sell';
       type: 'limit';
       limitPrice: number;
+      extendedHours?: boolean;
     };
 
 /**

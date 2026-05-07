@@ -195,11 +195,16 @@ export function computeOrbSignal(stock: StockState, bars: Bar[], now: Date): Orb
 }
 
 class RuleEngineService {
-  async getRankedCandidates(stocks: StockState[], limit = 10, regime?: RegimeSnapshot): Promise<TradeCandidate[]> {
+  async getRankedCandidates(
+    stocks: StockState[],
+    limit = 10,
+    regime?: RegimeSnapshot,
+    session: 'pre' | 'rth' | 'post' | 'closed' = 'rth',
+  ): Promise<TradeCandidate[]> {
     const evaluated = await Promise.all(
       stocks.map(async (stock) => {
         const messageContext = messageService.getSymbolContext(stock.symbol);
-        return this.evaluateStock(stock, messageContext, regime);
+        return this.evaluateStock(stock, messageContext, regime, session);
       })
     );
 
@@ -209,16 +214,26 @@ class RuleEngineService {
     return candidates.slice(0, Math.max(1, Math.min(limit, 100)));
   }
 
-  private async evaluateStock(stock: StockState, messageContext: SymbolMessageContext, regime?: RegimeSnapshot): Promise<TradeCandidate | null> {
+  private async evaluateStock(
+    stock: StockState,
+    messageContext: SymbolMessageContext,
+    regime?: RegimeSnapshot,
+    session: 'pre' | 'rth' | 'post' | 'closed' = 'rth',
+  ): Promise<TradeCandidate | null> {
     const hotnessCfg = config.execution.sector_hotness;
+    // Pre/post-market: only RCT signals are eligible. ORB depends on the
+    // RTH opening range; sector hotness uses 1-min bars that don't exist
+    // outside RTH. Skip both to save Alpaca rate-limit budget and to
+    // avoid emitting non-RCT candidates that pickSetup would reject anyway.
+    const skipRthOnly = session === 'pre' || session === 'post';
     const [redCandleSignal, orbSignal, sectorHotness] = await Promise.all([
       this.detectRedCandleTheory(stock),
-      this.detectOrbBreakout(stock),
-      hotnessCfg?.enabled
+      skipRthOnly ? Promise.resolve(emptyOrbSignal()) : this.detectOrbBreakout(stock),
+      !skipRthOnly && hotnessCfg?.enabled
         ? sectorHotnessService.getHotnessForSymbol(stock.symbol, hotnessCfg.max_age_seconds)
         : Promise.resolve(null),
     ]);
-    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal, regime, sectorHotness);
+    return this.scoreFromInputs(stock, messageContext, redCandleSignal, orbSignal, regime, sectorHotness, session);
   }
 
   /**
@@ -234,6 +249,7 @@ class RuleEngineService {
     orbSignal: OrbSignal = emptyOrbSignal(),
     regime?: RegimeSnapshot,
     sectorHotness?: SectorHotness | null,
+    session: 'pre' | 'rth' | 'post' | 'closed' = 'rth',
   ): TradeCandidate | null {
     const oracleScore = this.scoreOracle(stock);
     const messageScore = Math.min(100, messageContext.convictionScore);
@@ -291,6 +307,14 @@ class RuleEngineService {
 
     const setup = this.pickSetup(stock, messageContext.tagCounts, redCandleSignal, orbSignal);
     if (!setup) {
+      return null;
+    }
+    // Extended-hours: RCT is the only setup with edge in thin sessions
+    // (printed-and-broken candle structure persists; opening-range and
+    // sector-rotation signals don't translate). Drop everything else so
+    // the trade-filter / executionService don't get a chance to enter
+    // a non-RCT candidate ext-hours.
+    if ((session === 'pre' || session === 'post') && setup !== 'red_candle_theory') {
       return null;
     }
 

@@ -70,7 +70,16 @@ export class AlpacaAdapter implements BrokerAdapter {
   }
 
   async submitOrder(params: SubmitOrderParams): Promise<BrokerOrder> {
-    const body: Record<string, string> = {
+    // Extended-hours orders are limit-only at Alpaca. Refuse the wrong
+    // shape at the adapter boundary so we never even hit the broker with
+    // an obviously-rejected order.
+    if (params.type === 'limit' && params.extendedHours && !params.limitPrice) {
+      throw new Error('extended-hours order requires a limit price');
+    }
+    if (params.type === 'market' && (params as { extendedHours?: boolean }).extendedHours) {
+      throw new Error('extended-hours orders must be limit orders (Alpaca constraint)');
+    }
+    const body: Record<string, string | boolean> = {
       symbol: params.symbol,
       qty: String(params.qty),
       side: params.side,
@@ -79,6 +88,7 @@ export class AlpacaAdapter implements BrokerAdapter {
     };
     if (params.type === 'limit' && params.limitPrice !== undefined) {
       body.limit_price = String(params.limitPrice);
+      if (params.extendedHours) body.extended_hours = true;
     }
     const res = await fetch(`${baseUrl()}/orders`, {
       method: 'POST',

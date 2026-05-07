@@ -27,7 +27,14 @@ vi.mock('../config.js', () => ({
         veto_rotation_max: 7.0,
         max_age_seconds: 600,
       },
+      extended_hours: {
+        enabled: true,
+        no_entry_buffer_minutes_before_close: 15,
+        size_cap_pct: 0.5,
+        stop_buffer_pct: 0.25,
+      },
     },
+    market_hours: { timezone: 'America/New_York', open: '09:30', close: '16:00' },
   },
 }));
 
@@ -375,6 +382,53 @@ describe('TradeFilterService', () => {
       vi.mocked(floatMapService.getEntryForSymbol).mockReturnValue(null);
       const candidate = makeCandidate({ suggestedEntry: 1.0, suggestedStop: 0.95 });
       const result = tradeFilterService.filterCandidate(candidate, makeAccount());
+      expect(result.passed).toBe(true);
+    });
+  });
+
+  describe('extended-hours guards', () => {
+    it('rejects non-RCT setups during pre-market', () => {
+      const candidate = makeCandidate({
+        suggestedEntry: 1.0,
+        suggestedStop: 0.95,
+        setup: 'momentum_continuation',
+      });
+      const result = tradeFilterService.filterCandidate(candidate, makeAccount(), undefined, 'pre');
+      expect(result.passed).toBe(false);
+      expect(result.reason).toContain('not eligible in ext-hours');
+    });
+
+    it('rejects non-RCT setups during post-market', () => {
+      const candidate = makeCandidate({
+        suggestedEntry: 1.0,
+        suggestedStop: 0.95,
+        setup: 'orb_breakout',
+      });
+      const result = tradeFilterService.filterCandidate(candidate, makeAccount(), undefined, 'post');
+      expect(result.passed).toBe(false);
+      expect(result.reason).toContain('not eligible in ext-hours');
+    });
+
+    it('passes RCT setups during pre-market', () => {
+      const candidate = makeCandidate({
+        suggestedEntry: 1.0,
+        suggestedStop: 0.95,
+        setup: 'red_candle_theory',
+      });
+      const result = tradeFilterService.filterCandidate(candidate, makeAccount(), undefined, 'pre');
+      expect(result.passed).toBe(true);
+    });
+
+    it('does NOT apply ext-hours rules during RTH', () => {
+      const candidate = makeCandidate({
+        suggestedEntry: 1.0,
+        suggestedStop: 0.95,
+        setup: 'momentum_continuation',
+      });
+      // RTH session — momentum_continuation should NOT be rejected by
+      // the ext-hours gate. (Other RTH gates may still apply but are
+      // not exercised by this test fixture.)
+      const result = tradeFilterService.filterCandidate(candidate, makeAccount(), undefined, 'rth');
       expect(result.passed).toBe(true);
     });
   });

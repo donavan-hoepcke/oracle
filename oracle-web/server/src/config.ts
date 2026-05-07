@@ -158,6 +158,26 @@ const configSchema = z.object({
       trailing_mfe_activate_r: z.number().positive().default(0.5),
       trailing_mfe_giveback_pct: z.number().min(0).max(1).default(0.5),
       eod_flatten_time: z.string().regex(/^\d{2}:\d{2}$/).default('15:50'),
+      extended_hours: z
+        .object({
+          // Master switch — set false to disable ext-hours entries
+          // entirely without removing the rest of the config.
+          enabled: z.boolean().default(false),
+          // Refuse new entries in the last N min of post-market — no
+          // time left to manage an exit before the session ends.
+          // Pre-market is NOT subject to this buffer (RTH starts in <15
+          // min of pre's last leg, so the bracket-promotion path picks
+          // up exits cleanly).
+          no_entry_buffer_minutes_before_close: z.number().int().nonnegative().default(15),
+          // Position-size cap during ext-hours, as a fraction of normal
+          // sizing. 0.5 = half the share count of an equivalent RTH
+          // entry. Reduces exposure to the wider ext-hours spreads.
+          size_cap_pct: z.number().positive().max(1).default(0.5),
+          // Widen the entry-time stop by this fraction of the original
+          // risk distance to absorb thin-session slippage.
+          stop_buffer_pct: z.number().nonnegative().max(1).default(0.25),
+        })
+        .default({}),
       float_rotation: z
         .object({
           enabled: z.boolean().default(true),
