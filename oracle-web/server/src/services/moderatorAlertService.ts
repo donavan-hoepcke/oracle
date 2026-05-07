@@ -396,24 +396,13 @@ export function parseModeratorAlertText(raw: string): ModeratorPost[] {
       continue;
     }
 
-    // Empty-body prep posts are always a parser failure — Bohen's prep
-    // notes always carry actionable content (tickers, signal price, risk
-    // zone, target, backups). An empty-body capture means the post was
-    // rendered collapsed in the chat view and only the title made it into
-    // innerText. Drop here so the day-kind dedupe lets a later well-formed
-    // capture win instead of being shadowed by an empty stub.
-    //
-    // Other kinds (alert, double_down, backups) keep their empty-body
-    // semantics: moderators do post header-only notes for those, and
-    // dropping them would break the existing contract.
-    if (kind === 'pre_market_prep' && body.length === 0) {
-      console.warn(
-        `moderator-alerts: dropping prep post '${title}' (postedAt=${postedAt}) — empty body`,
-      );
-      cursor = tsIdx + 1;
-      continue;
-    }
-
+    // Empty-body prep posts used to be dropped here, but that ordering
+    // shadowed Evernote enrichment: Bohen's chat-room prep stubs render
+    // as title-only innerText (the link element itself is not captured
+    // by .innerText), and the Evernote URL lives elsewhere in the page's
+    // rawText. We now pass the empty-body prep through and let
+    // pollOnce drop it AFTER `enrichWithEvernoteBody` has had a chance
+    // to hydrate the body from the linked note.
     posts.push({
       title,
       kind,
@@ -490,7 +479,8 @@ export class ModeratorAlertService {
             const text = await this.fetchPageText(url);
             const parsed = parseModeratorAlertText(text);
             const enriched = await enrichWithEvernoteBody(parsed, text);
-            return { url, posts: enriched, error: null as string | null };
+            const filtered = dropEmptyBodyPrepPosts(enriched);
+            return { url, posts: filtered, error: null as string | null };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.warn(`moderator-alerts poll failed for ${url}:`, msg);
@@ -568,6 +558,29 @@ export async function enrichWithEvernoteBody(
       return { ...post, body: note.body, symbols };
     }),
   );
+}
+
+/**
+ * Final filter applied AFTER Evernote enrichment in `pollOnce`. Drops
+ * `pre_market_prep` posts whose body is still empty — these are parser
+ * captures of a chat stub where neither the chat innerText nor the
+ * Evernote fetch produced any content. Dropping here (instead of in
+ * `parseModeratorAlertText`) is what lets the enrichment pass run
+ * against title-only stubs and pull the body from the linked note.
+ *
+ * Non-prep kinds keep their original empty-body semantics — moderators do
+ * post header-only `alert` / `double_down` / `backups` notes and dropping
+ * those would break the existing contract.
+ */
+export function dropEmptyBodyPrepPosts(posts: ModeratorPost[]): ModeratorPost[] {
+  return posts.filter((post) => {
+    if (post.kind !== 'pre_market_prep') return true;
+    if (post.body.length > 0) return true;
+    console.warn(
+      `moderator-alerts: dropping prep post '${post.title}' (postedAt=${post.postedAt}) — empty body after enrichment`,
+    );
+    return false;
+  });
 }
 
 function mergeSymbols(a: string[], b: string[]): string[] {

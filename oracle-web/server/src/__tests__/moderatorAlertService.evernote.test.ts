@@ -107,11 +107,38 @@ describe('enrichWithEvernoteBody', () => {
   it('preserves original body when no Evernote URL is in raw text', async () => {
     const rawNoUrl = SAMPLE_RAW.replace(PREP_URL, '');
     const posts = parseModeratorAlertText(rawNoUrl);
-    const [enriched] = await enrichWithEvernoteBody(posts, rawNoUrl);
-    // The post should still surface (parser kept it because the URL line was
-    // absent but a body line was still present? In this sample, removing the
-    // URL leaves an empty body for the prep — parser drops it. Either way,
-    // enrichment must not crash on an empty list.)
-    expect(Array.isArray(enriched ? [enriched] : [])).toBe(true);
+    const out = await enrichWithEvernoteBody(posts, rawNoUrl);
+    // Enrichment is a no-op when no URL exists. The post survives parse
+    // now (parser no longer drops empty-body prep) and is left for
+    // `dropEmptyBodyPrepPosts` to remove afterward.
+    if (out.length > 0) {
+      expect(out[0].body).toBe('');
+    }
+  });
+
+  it('hydrates a title-only chat stub from an Evernote URL elsewhere in rawText', async () => {
+    // Real-world failure mode (2026-05-04 / 2026-05-05 logs): the chat
+    // innerText capture has only the title + footer — the URL is rendered
+    // as a clickable element that doesn't make it into innerText. But
+    // OTHER parts of the page (e.g. the room sidebar or a sibling post's
+    // body) carry the URL. Enrichment uses findEvernoteUrlForTitle which
+    // scans the full rawText, so this still hydrates.
+    const titleOnlyRaw = `Pre Market Prep Note 5-7-2026
+
+Pre-Market Prep Note
+PRE-MARKET PREP
+Tim Bohen
+May 7, 2026 4:30 AM
+
+(unrelated chat below)
+${PREP_URL}
+random chatter
+`;
+    const posts = parseModeratorAlertText(titleOnlyRaw);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body).toBe('');
+    const [enriched] = await enrichWithEvernoteBody(posts, titleOnlyRaw);
+    expect(enriched.body).toBe(HYDRATED_BODY);
+    expect(enriched.symbols).toContain('WATCHME');
   });
 });
