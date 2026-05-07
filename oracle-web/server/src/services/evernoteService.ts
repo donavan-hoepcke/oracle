@@ -15,12 +15,31 @@ export interface EvernoteNote {
 const EVERNOTE_URL_RE = /https:\/\/(?:lite\.|www\.)?evernote\.com\/note\/[a-f0-9-]+/gi;
 
 // Selector cascade tried in order. Evernote rebrands their editor periodically;
-// the fallback to document.body.innerText is the last-resort capture.
+// the fallback to `document.body.innerText` is the last-resort capture.
+//
+// As of 2026-05-07 the Lite share viewer (`lite.evernote.com/note/<uuid>`)
+// renders content into a generic content-editable region rather than the
+// older `.NoteEditor` / `.ReadOnlyEditor` classes; the additions below are
+// best-effort matches that should catch the current DOM without coupling
+// us to a specific class name. If Evernote rev's their markup again, the
+// fallback to body innerText still recovers something.
 const NOTE_SELECTORS = [
   '.NoteEditor',
   '.ReadOnlyEditor',
   '[data-test-id="note-content"]',
+  '[contenteditable="true"]',
+  '[role="textbox"]',
+  'main article',
+  'main',
 ];
+
+// How often we poll body text while waiting for the share viewer to hydrate.
+// 500ms gives a smooth ramp without being chatty.
+const HYDRATION_POLL_MS = 500;
+// Body text shorter than this is almost certainly the chrome+title stub
+// before the actual note paints (live captures from the bug were ~86 chars).
+// Use as a "is this hydrated" heuristic alongside the placeholder strings.
+const HYDRATED_BODY_MIN_CHARS = 300;
 
 export class EvernoteService {
   private cache = new Map<string, EvernoteNote>();
@@ -82,7 +101,14 @@ export class EvernoteService {
       const page = await context.newPage();
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-        await page.waitForTimeout(cfg.hydration_wait_ms);
+        // Lite share viewer hydrates the note body via JS after first paint.
+        // A fixed `waitForTimeout` either over-waits (polls too late and
+        // returns the placeholder) or under-waits. Poll until the body has
+        // grown past the placeholder and the explicit "Loading note"
+        // string is gone, then proceed. If we hit the budget without
+        // hydrating, fall through and let the placeholder check below
+        // reject the result so we don't cache a stub for the day.
+        await waitForHydration(page, cfg.hydration_wait_ms);
         const extracted = (await page.evaluate(`(() => {
           const selectors = ${JSON.stringify(NOTE_SELECTORS)};
           for (const sel of selectors) {
@@ -104,6 +130,13 @@ export class EvernoteService {
         const body = (extracted.body ?? '').trim();
         if (!body) {
           console.warn(`evernote: empty body extracted from ${url}`);
+          return null;
+        }
+        if (looksLikePlaceholder(body)) {
+          console.warn(
+            `evernote: hydration placeholder still present at ${url} ` +
+              `(body=${body.length} chars) — not caching, will retry next poll`,
+          );
           return null;
         }
         if (looksLikeSignInWall(body)) {
@@ -146,6 +179,57 @@ function looksLikeSignInWall(body: string): boolean {
   // adjacent. Login pages do.
   if (t.includes('password') && t.includes('create account')) return true;
   return false;
+}
+
+/**
+ * Heuristic: the Lite share viewer's pre-hydration paint contains:
+ *   "Welcome to Evernote Lite editor!"
+ *   "Loading note..."
+ *   "<title>"
+ *   "Sign in"
+ * — total ~80–100 chars. If we capture that, we get a misleadingly
+ * specific 86-char "body" with the chat-room title in it but no real
+ * note content. Caching that locks today's prep into a stub for the
+ * entire process lifetime. Treat it as an outage and let the next poll
+ * retry. False positives here are also harmless (just one more poll).
+ */
+export function looksLikePlaceholder(body: string): boolean {
+  if (body.includes('Loading note')) return true;
+  // Lite editor chrome with no real content yet — short body + the
+  // welcome banner is the giveaway.
+  if (
+    body.includes('Welcome to Evernote Lite editor') &&
+    body.length < HYDRATED_BODY_MIN_CHARS
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Poll the page's body innerText until it looks hydrated (long enough,
+ * "Loading note" gone) or the budget elapses. Returning early shaves
+ * latency on fast-hydrating notes; returning at the deadline lets the
+ * caller's placeholder check reject what we got.
+ */
+async function waitForHydration(
+  page: { evaluate: (script: string) => Promise<unknown>; waitForTimeout: (ms: number) => Promise<void> },
+  budgetMs: number,
+): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    const probe = (await page.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
+    if (
+      typeof probe === 'string' &&
+      probe.length >= HYDRATED_BODY_MIN_CHARS &&
+      !probe.includes('Loading note')
+    ) {
+      return;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await page.waitForTimeout(Math.min(HYDRATION_POLL_MS, remaining));
+  }
 }
 
 /**
