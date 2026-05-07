@@ -31,6 +31,19 @@ export function attachRawStreamSocket(stream: RawStreamService): RawStreamSocket
   const wss = new WebSocketServer({ noServer: true });
 
   wss.on('connection', (ws: WebSocket, req) => {
+    // Push the moderator-alert snapshot first so a fresh client sees
+    // today's known prep / alert posts even when the ring buffer has
+    // rolled past their original ids. These are subscriber-scoped pushes
+    // emitted as id=0 events — they do NOT advance the client's Last-
+    // Event-ID tracker, so the subsequent replay/live forwarding still
+    // works against the client's last actually-seen id. Bot-side dedupe
+    // by (postedAt, title) absorbs any overlap with replay/live emits.
+    stream.emitModeratorSnapshotTo((evt) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(evt));
+      }
+    });
+
     const sinceHeader = req.headers['last-event-id'];
     const sinceId = typeof sinceHeader === 'string' ? Number.parseInt(sinceHeader, 10) : NaN;
     if (Number.isFinite(sinceId)) {

@@ -4,6 +4,7 @@ import { createServer, type Server } from 'http';
 import WebSocket from 'ws';
 import { rawStreamService } from '../services/rawStreamService.js';
 import { attachRawStreamSocket } from '../websocket/rawStreamSocket.js';
+import { moderatorAlertService, type ModeratorPost } from '../services/moderatorAlertService.js';
 
 function wireRawStream(server: Server) {
   const handle = attachRawStreamSocket(rawStreamService);
@@ -93,5 +94,58 @@ describe('WS /api/raw/stream resume', () => {
 
     // Without a sinceId header, we should not get a replay — only live events from now on.
     expect(messages).toEqual([]);
+  });
+});
+
+describe('WS /api/raw/stream moderator-snapshot replay', () => {
+  let server: Server;
+  let port: number;
+
+  beforeAll(async () => {
+    rawStreamService.reset();
+    const app = express();
+    server = createServer(app);
+    wireRawStream(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (addr && typeof addr !== 'string') port = addr.port;
+    // Populate the moderator snapshot with today's prep, then bind so the
+    // raw stream can read it on subsequent client connections.
+    const post: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: 'today watchlist...',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    // Roll the buffer so the live emit from `bindModeratorAlertService`
+    // can no longer be replayed (simulates the bot connecting mid-
+    // afternoon after scanner_updates have rolled the buffer).
+    for (let i = 0; i < 1100; i++) {
+      rawStreamService.publish({ type: 'scanner_update', payload: { i } });
+    }
+  });
+
+  afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  it('pushes the moderator snapshot as mod_alert events on every fresh connection, regardless of buffer rollover', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/raw/stream`);
+    const messages: { id: number; type: string; payload: { title?: string } }[] = [];
+    ws.on('message', (data) => messages.push(JSON.parse(data.toString())));
+    await new Promise<void>((resolve) => ws.on('open', resolve));
+    await new Promise((r) => setTimeout(r, 200));
+    ws.close();
+
+    const modAlerts = messages.filter((m) => m.type === 'mod_alert');
+    // The bot should see today's prep even though the original live emit
+    // is long since rolled out of the ring buffer.
+    expect(modAlerts).toHaveLength(1);
+    expect(modAlerts[0].id).toBe(0); // snapshot pushes use id=0
+    expect(modAlerts[0].payload.title).toBe('Pre Market Prep Note 5-7-2026');
   });
 });

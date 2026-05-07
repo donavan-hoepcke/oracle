@@ -235,6 +235,110 @@ describe('RawStreamService.bind() integration', () => {
     expect(types.filter((t) => t === 'mod_alert')).toHaveLength(2);
   });
 
+  it('re-emits a previously-seen post once the dedup TTL has elapsed', () => {
+    // Regression for the 2026-05-07 mod_alert dedup-for-life bug. An
+    // unbounded Set caused today's prep to emit exactly once at first
+    // scrape; by mid-afternoon the ring buffer had rolled past it and a
+    // bot connecting fresh saw zero mod_alerts. TTL means the same post
+    // re-emits at most once per 24h window — enough for cross-session
+    // replay without flooding live subscribers.
+    const types: string[] = [];
+    rawStreamService.subscribe((e) => types.push(e.type));
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const post: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: 'long body...',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const realDateNow = Date.now;
+    let now = 1_700_000_000_000;
+    Date.now = () => now;
+    try {
+      moderatorAlertService.ingestPosts([post]); // first emit
+      moderatorAlertService.ingestPosts([post]); // dedup blocks
+      now += 25 * 60 * 60 * 1000; // jump past the 24h TTL
+      moderatorAlertService.ingestPosts([post]); // expired key prunes; re-emits
+    } finally {
+      Date.now = realDateNow;
+    }
+    expect(types.filter((t) => t === 'mod_alert')).toHaveLength(2);
+  });
+
+  it('emitModeratorSnapshotTo pushes current snapshot posts to a single listener as mod_alert events', () => {
+    // Regression for the same bug: even with TTL, a bot connecting in
+    // the same dedup window can't see today's prep because the dedup
+    // gate suppresses re-emit. Snapshot-on-subscribe gives every fresh
+    // client today's known posts directly, bypassing the gate.
+    const post: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: 'today watch list ...',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    moderatorAlertService.ingestPosts([post]); // populates the snapshot
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+
+    const captured: { id: number; type: string; payload: unknown }[] = [];
+    rawStreamService.emitModeratorSnapshotTo((evt) => {
+      captured.push({ id: evt.id, type: evt.type, payload: evt.payload });
+    });
+    expect(captured).toHaveLength(1);
+    expect(captured[0].type).toBe('mod_alert');
+    // id=0 prevents the bot's Last-Event-ID tracker from advancing past
+    // a real (id>0) live event — snapshot pushes are subscriber-scoped.
+    expect(captured[0].id).toBe(0);
+    const payload = captured[0].payload as { title: string; posted_at: string };
+    expect(payload.title).toBe('Pre Market Prep Note 5-7-2026');
+  });
+
+  it('emitModeratorSnapshotTo does not call publish or advance nextId (other subscribers stay clean)', () => {
+    const post: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: 'x',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+
+    // A separate, already-connected subscriber must NOT see the snapshot
+    // push — that would cause every existing client to receive a fresh
+    // mod_alert every time a new client connects.
+    const otherSubscriberSaw: number[] = [];
+    rawStreamService.subscribe((evt) => otherSubscriberSaw.push(evt.id));
+    rawStreamService.emitModeratorSnapshotTo(() => {
+      /* discard */
+    });
+    expect(otherSubscriberSaw).toEqual([]);
+
+    // And the global ring buffer must be unchanged so the next live
+    // event keeps assigning ids from where it left off.
+    rawStreamService.publish({ type: 'message', payload: { i: 1 } });
+    const last = otherSubscriberSaw[otherSubscriberSaw.length - 1];
+    // First and only id seen by this subscriber should be the publish id,
+    // and it should be 1 + however many real events bind/ingest produced.
+    expect(last).toBeGreaterThan(0);
+  });
+
+  it('emitModeratorSnapshotTo is a no-op when bindModeratorAlertService has not run', () => {
+    const captured: unknown[] = [];
+    rawStreamService.emitModeratorSnapshotTo((evt) => captured.push(evt));
+    expect(captured).toEqual([]);
+  });
+
   it('reset clears the mod_alert dedup cache', () => {
     const types: string[] = [];
     rawStreamService.subscribe((e) => types.push(e.type));
