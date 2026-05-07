@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { toZonedTime } from 'date-fns-tz';
 import { brokerService } from './brokers/index.js';
 import type { BrokerOrder, BrokerPosition } from '../types/broker.js';
 import { tradeFilterService, AccountState } from './tradeFilterService.js';
@@ -6,6 +7,27 @@ import { TradeCandidate, CandidateSetup } from './ruleEngineService.js';
 import { StockState } from '../websocket/priceSocket.js';
 import type { RegimeSnapshot } from './regimeService.js';
 import { appendLedgerEntry } from './ledgerStore.js';
+
+/**
+ * Detect Alpaca's pattern-day-trader rejection. Match on either the
+ * documented error code (40310100) or the human-readable phrase to be
+ * defensive against adapter wrapping or formatting changes. Exported
+ * for testability.
+ */
+export function isPdtError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (msg.includes('40310100')) return true;
+  return /pattern day trad(?:er|ing)/i.test(msg);
+}
+
+/** ET trading-day key used to scope the PDT circuit breaker. */
+function todayInET(): string {
+  const z = toZonedTime(new Date(), config.market_hours?.timezone || 'America/New_York');
+  const y = z.getFullYear();
+  const m = String(z.getMonth() + 1).padStart(2, '0');
+  const d = String(z.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 export interface ActiveTrade {
   symbol: string;
@@ -99,6 +121,14 @@ export class ExecutionService {
   private washSaleRefreshedAt = 0;
   private startOfDayEquity: number | null = null;
   private enabled = config.execution.enabled;
+  // Set to today's ET date when Alpaca returns a PDT (pattern day trader)
+  // rejection. While this is set for the current trading day we skip the
+  // submit path entirely — every potential day-trade would be rejected
+  // the same way and looping just spams the log every cycle. Cleared
+  // automatically on the next session day. Cash account vs margin
+  // doesn't matter to PDT — the rule applies to any account ≤ $25k that
+  // would round-trip a position the same day.
+  private pdtBlockedDay: string | null = null;
 
   getRejections(): FilterRejection[] {
     return Array.from(this.rejections.values());
@@ -800,7 +830,30 @@ export class ExecutionService {
       if (!currentCandidateSymbols.has(symbol)) this.rejections.delete(symbol);
     }
 
-    for (const candidate of candidates) {
+    // PDT circuit-breaker: once Alpaca has returned a PDT rejection this
+    // trading day, every other day-trade attempt will fail identically.
+    // Short-circuit and tag remaining candidates with a structured
+    // rejection so the bot/UI can see WHY nothing's getting submitted.
+    // Auto-clears at the next ET trading-day boundary (next call sees
+    // todayInET() return a new string).
+    const today = todayInET();
+    if (this.pdtBlockedDay === today) {
+      for (const candidate of candidates) {
+        if (this.activeTrades.some((t) => t.symbol === candidate.symbol)) continue;
+        this.recordRejection(
+          candidate,
+          'PDT protection (account < $25k, day-trades blocked for the rest of today)',
+        );
+      }
+      return;
+    }
+    if (this.pdtBlockedDay && this.pdtBlockedDay !== today) {
+      // Day rolled — clear so today gets a fresh chance.
+      this.pdtBlockedDay = null;
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
       if (this.activeTrades.some(t => t.symbol === candidate.symbol)) {
         this.rejections.delete(candidate.symbol);
         continue;
@@ -948,6 +1001,36 @@ export class ExecutionService {
         account.deployedCapital += size.costBasis;
         reservedSymbols.add(candidate.symbol);
       } catch (err) {
+        // Detect Alpaca's PDT (pattern day trader) rejection as a
+        // structured rejection rather than a stack-trace log every
+        // cycle. The error code is 40310100; we match on either the
+        // code or the human-readable phrase to be defensive against
+        // adapter wrapping. Once tripped, set a session-level circuit
+        // breaker so subsequent candidates this trading day are dropped
+        // up front (same outcome, less log spam, clearer rejection
+        // panel for the bot/UI to surface).
+        if (isPdtError(err)) {
+          this.recordRejection(
+            candidate,
+            'PDT protection (account < $25k, day-trade blocked by Alpaca)',
+          );
+          this.pdtBlockedDay = todayInET();
+          console.warn(
+            `[execution] PDT block tripped for ${candidate.symbol} — suppressing further entries today (${this.pdtBlockedDay})`,
+          );
+          // Tag the remaining candidates in this cycle so the bot/UI
+          // sees them as PDT-blocked instead of "evaluating". Subsequent
+          // cycles short-circuit at the top of evaluateNewEntries.
+          for (let j = i + 1; j < candidates.length; j++) {
+            const remaining = candidates[j];
+            if (this.activeTrades.some((t) => t.symbol === remaining.symbol)) continue;
+            this.recordRejection(
+              remaining,
+              'PDT protection (account < $25k, day-trades blocked for the rest of today)',
+            );
+          }
+          break;
+        }
         console.error(`Failed to submit order for ${candidate.symbol}:`, err);
       }
     }

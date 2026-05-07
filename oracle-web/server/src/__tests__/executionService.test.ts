@@ -178,6 +178,37 @@ describe('ExecutionService', () => {
       expect(mockOrderService.submitOrder).not.toHaveBeenCalled();
       expect(service.getActiveTrades()).toHaveLength(0);
     });
+
+    it('records a structured PDT rejection on Alpaca code 40310100 and circuit-breaks the rest of the day', async () => {
+      // Reproduce the 2026-05-07 ATRA repeated-rejection pattern. First
+      // submission attempts the order; broker returns PDT. We should
+      // record a clear rejection (not a stack trace) AND skip every
+      // remaining candidate this cycle / future cycles same day.
+      mockOrderService.submitBracketOrder.mockRejectedValueOnce(
+        new Error(
+          'Alpaca bracket order error: 403 {"code":40310100,"message":"trade denied due to pattern day trading protection"}',
+        ),
+      );
+      const c1 = makeCandidate('ATRA', 7.85, 7.78, 8.76);
+      const c2 = makeCandidate('FSLY', 19.75, 19.53, 31.98);
+      await service.onPriceCycle([c1, c2], [makeStockState('ATRA', 7.85), makeStockState('FSLY', 19.75)]);
+
+      // ATRA tripped the breaker, FSLY was tagged but never submitted.
+      expect(mockOrderService.submitBracketOrder).toHaveBeenCalledTimes(1);
+      const rejs = service.getRejections();
+      const symbols = rejs.map((r) => r.symbol).sort();
+      expect(symbols).toContain('ATRA');
+      expect(symbols).toContain('FSLY');
+      const atraRej = rejs.find((r) => r.symbol === 'ATRA');
+      expect(atraRej?.reason).toMatch(/PDT protection/);
+
+      // Subsequent cycle same day: still no submits, both tagged.
+      mockOrderService.submitBracketOrder.mockClear();
+      await service.onPriceCycle([c1, c2], [makeStockState('ATRA', 7.85), makeStockState('FSLY', 19.75)]);
+      expect(mockOrderService.submitBracketOrder).not.toHaveBeenCalled();
+      const fslyRej = service.getRejections().find((r) => r.symbol === 'FSLY');
+      expect(fslyRej?.reason).toMatch(/PDT protection/);
+    });
   });
 
   describe('bracket exit semantics', () => {
