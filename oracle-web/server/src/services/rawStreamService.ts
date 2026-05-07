@@ -42,18 +42,32 @@ interface BotShapedModAlert {
   risk_zone: number | null;
   target_floor: number | null;
   target: string | null;
-  // Original post fields, with body excerpted to keep the WS payload small
-  // (the bot truncates payload summaries at 240 chars; a full prep post body
-  // is ~1500 chars and hides the structured fields from the agent prompt).
+  // Original post fields. body_excerpt is truncated for chat-style
+  // posts (alert / double_down / backups / other) so structured fields
+  // dominate the agent prompt; pre_market_prep / weekend_resources are
+  // sent in full because the body IS the structured content there.
   title: string;
   kind: string;
   author: string;
   posted_at: string | null;
   body_excerpt: string;
   backups: unknown[];
+  /** All $TICKER mentions found in the post (server-side extracted, deduped,
+   *  in order of first appearance). Populated for every kind — for prep
+   *  notes this is the highest-value signal because the body itself
+   *  references many tickers. Bot uses this to seed plan-day watchlists
+   *  without re-parsing body_excerpt. */
+  symbols: string[];
 }
 
 const BODY_EXCERPT_CHARS = 400;
+// Kinds whose body IS the structured content. Truncating these would
+// throw away most of the value — prep notes typically run several
+// thousand chars and the per-ticker rationale is what the bot needs
+// for plan-day. Chat-style kinds (alert, double_down, backups) keep
+// the 400-char cap because their structured Signal:/Risk Zone:/Target:
+// fields carry the actionable data and the body is mostly narrative.
+const FULL_BODY_KINDS = new Set(['pre_market_prep', 'weekend_resources']);
 
 interface ParsedSignalLike {
   symbol: string;
@@ -71,14 +85,21 @@ interface PostLike {
   body?: unknown;
   signal?: unknown;
   backups?: unknown;
+  symbols?: unknown;
 }
 
 function shapeModAlertForBot(post: unknown): BotShapedModAlert {
   const p = (post ?? {}) as PostLike;
   const sig = (p.signal ?? null) as ParsedSignalLike | null;
+  const kind = typeof p.kind === 'string' ? p.kind : 'other';
   const body = typeof p.body === 'string' ? p.body : '';
-  const bodyExcerpt =
-    body.length <= BODY_EXCERPT_CHARS ? body : body.slice(0, BODY_EXCERPT_CHARS) + '…';
+  const sendFullBody = FULL_BODY_KINDS.has(kind);
+  const bodyExcerpt = sendFullBody || body.length <= BODY_EXCERPT_CHARS
+    ? body
+    : body.slice(0, BODY_EXCERPT_CHARS) + '…';
+  const symbols = Array.isArray(p.symbols)
+    ? (p.symbols as unknown[]).filter((s): s is string => typeof s === 'string')
+    : [];
   return {
     symbol: sig?.symbol ?? null,
     signal_price: sig?.signal ?? null,
@@ -86,11 +107,12 @@ function shapeModAlertForBot(post: unknown): BotShapedModAlert {
     target_floor: sig?.targetFloor ?? null,
     target: sig?.target ?? null,
     title: typeof p.title === 'string' ? p.title : '',
-    kind: typeof p.kind === 'string' ? p.kind : 'other',
+    kind,
     author: typeof p.author === 'string' ? p.author : '',
     posted_at: typeof p.postedAt === 'string' ? p.postedAt : null,
     body_excerpt: bodyExcerpt,
     backups: Array.isArray(p.backups) ? p.backups : [],
+    symbols,
   };
 }
 

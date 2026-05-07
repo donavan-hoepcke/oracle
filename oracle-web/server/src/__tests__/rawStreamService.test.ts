@@ -120,7 +120,7 @@ describe('RawStreamService.bind() integration', () => {
     expect(payload.backups).toEqual([{ symbol: 'CNSP', price: 10.65, note: null }]);
   });
 
-  it('bindModeratorAlertService excerpts long bodies to keep payload small', () => {
+  it('bindModeratorAlertService excerpts long bodies on chat-style alerts (kind=alert)', () => {
     const captured: unknown[] = [];
     rawStreamService.subscribe((e) => {
       if (e.type === 'mod_alert') captured.push(e.payload);
@@ -128,10 +128,10 @@ describe('RawStreamService.bind() integration', () => {
     rawStreamService.bindModeratorAlertService(moderatorAlertService);
     const longBody = 'x'.repeat(2000);
     const post: ModeratorPost = {
-      title: 'Pre-Market Prep',
-      kind: 'pre_market_prep',
+      title: 'Daily Market Profits Alert 5-7-2026',
+      kind: 'alert',
       author: 'Tim Bohen',
-      postedAt: null,
+      postedAt: '2026-05-07T13:30:00.000Z',
       body: longBody,
       signal: null,
       backups: [],
@@ -144,6 +144,64 @@ describe('RawStreamService.bind() integration', () => {
     const excerpt = payload.body_excerpt as string;
     expect(excerpt.length).toBeLessThanOrEqual(401); // 400 + 1 ellipsis char
     expect(excerpt.endsWith('…')).toBe(true);
+  });
+
+  it('bindModeratorAlertService sends pre_market_prep bodies in full (no excerpt truncation)', () => {
+    // The prep body IS the structured content — truncating it to 400
+    // chars throws away the per-ticker rationale that plan-day needs.
+    // Chat-style kinds (alert / double_down / backups) keep the cap
+    // because their structured Signal:/Risk Zone:/Target: fields carry
+    // the actionable data; the body is mostly narrative.
+    const captured: unknown[] = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'mod_alert') captured.push(e.payload);
+    });
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const longBody = 'A'.repeat(2500);
+    const post: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: longBody,
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.unbindAll();
+
+    const payload = captured[0] as Record<string, unknown>;
+    const excerpt = payload.body_excerpt as string;
+    expect(excerpt).toBe(longBody);
+    expect(excerpt.endsWith('…')).toBe(false);
+  });
+
+  it('bindModeratorAlertService forwards the post-level symbols array on every kind', () => {
+    // Server-side tickers (extracted by parseModeratorAlertText) should
+    // surface on the WS payload so the bot can correlate by ticker
+    // without re-parsing body_excerpt — especially valuable for prep,
+    // where the body references many symbols.
+    const captured: unknown[] = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'mod_alert') captured.push(e.payload);
+    });
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const post: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: 'Today watch: $GLE $SMX $RXT $AMD $ATRA',
+      signal: null,
+      backups: [],
+      symbols: ['GLE', 'SMX', 'RXT', 'AMD', 'ATRA'],
+    };
+    moderatorAlertService.ingestPosts([post]);
+    rawStreamService.unbindAll();
+
+    const payload = captured[0] as Record<string, unknown>;
+    expect(payload.symbols).toEqual(['GLE', 'SMX', 'RXT', 'AMD', 'ATRA']);
   });
 
   it('bindModeratorAlertService leaves symbol null when no signal was parsed', () => {
