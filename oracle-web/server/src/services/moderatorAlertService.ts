@@ -1,5 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
+import { evernoteService, findEvernoteUrlForTitle } from './evernoteService.js';
+
+// Bohen's chat-room prep stub usually has a body shorter than this — when
+// the real content is in Evernote, the chat post is just a header and a
+// link. Use the threshold as the "needs hydration" signal so a fully
+// in-chat prep (rare but possible) is not re-fetched.
+const EVERNOTE_MIN_BODY_LENGTH = 200;
 
 export interface ModeratorSignal {
   symbol: string;
@@ -481,7 +488,9 @@ export class ModeratorAlertService {
         urls.map(async (url) => {
           try {
             const text = await this.fetchPageText(url);
-            return { url, posts: parseModeratorAlertText(text), error: null as string | null };
+            const parsed = parseModeratorAlertText(text);
+            const enriched = await enrichWithEvernoteBody(parsed, text);
+            return { url, posts: enriched, error: null as string | null };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.warn(`moderator-alerts poll failed for ${url}:`, msg);
@@ -520,6 +529,56 @@ export class ModeratorAlertService {
       await browser.close();
     }
   }
+}
+
+/**
+ * Hydrate `pre_market_prep` posts whose body is just a header + Evernote
+ * link by fetching the linked note and substituting its text in for the
+ * post body. Non-prep kinds and prep posts that already have substantial
+ * content are passed through unchanged. Fetch failures fall through too —
+ * the original (short) body is preserved so the post still surfaces.
+ *
+ * Runs per-URL inside `pollOnce`, BEFORE merge: each room's parsed posts
+ * carry the rawText that produced them, which is what we scan to locate
+ * the Evernote URL. After enrichment the posts go through `mergeAndDedupe`
+ * normally — the day-kind dedupe will pick the longest-body record, so a
+ * hydrated capture wins over an un-hydrated one from a sibling room.
+ */
+export async function enrichWithEvernoteBody(
+  posts: ModeratorPost[],
+  rawText: string,
+): Promise<ModeratorPost[]> {
+  if (!config.bot.moderatorAlerts.evernote.enabled) return posts;
+  return Promise.all(
+    posts.map(async (post) => {
+      if (post.kind !== 'pre_market_prep') return post;
+      if (post.body.length >= EVERNOTE_MIN_BODY_LENGTH) return post;
+      const url = findEvernoteUrlForTitle(post.title, rawText);
+      if (!url) return post;
+      const note = await evernoteService.fetchNote(url);
+      if (!note || !note.body) return post;
+      // Re-extract tickers from the hydrated body so $TICKER mentions in the
+      // Evernote note surface in `symbols` (downstream consumers correlate
+      // by ticker — they should see what's in the prep, not just the stub).
+      const hydratedLines = note.body
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+      const symbols = mergeSymbols(post.symbols, extractAllTickers(hydratedLines));
+      return { ...post, body: note.body, symbols };
+    }),
+  );
+}
+
+function mergeSymbols(a: string[], b: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const sym of [...a, ...b]) {
+    if (seen.has(sym)) continue;
+    seen.add(sym);
+    out.push(sym);
+  }
+  return out;
 }
 
 /**
