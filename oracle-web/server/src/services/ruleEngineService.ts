@@ -195,23 +195,78 @@ export function computeOrbSignal(stock: StockState, bars: Bar[], now: Date): Orb
 }
 
 class RuleEngineService {
+  // Cache + inflight dedupe for the full ranked list. Without these, every
+  // /api/raw/symbols/:sym call re-runs evaluateStock over the entire ~40-
+  // symbol watchlist, each evaluation firing 1–2 Alpaca 1m-bar fetches.
+  // 12 concurrent symbol-detail requests was timing out at 15s on
+  // 2026-05-07 because ~480 Alpaca calls were queued behind the IEX rate
+  // limiter (200/min cap). Coalescing concurrent callers + serving from
+  // a 5s cache turns N concurrent evaluations into 1.
+  private cachedRanking: { candidates: TradeCandidate[]; ts: number; key: string } | null = null;
+  private inflightRanking: Promise<TradeCandidate[]> | null = null;
+  private static readonly RANKING_CACHE_TTL_MS = 5_000;
+
   async getRankedCandidates(
     stocks: StockState[],
     limit = 10,
     regime?: RegimeSnapshot,
     session: 'pre' | 'rth' | 'post' | 'closed' = 'rth',
   ): Promise<TradeCandidate[]> {
+    const sliced = (cands: TradeCandidate[]) =>
+      cands.slice(0, Math.max(1, Math.min(limit, 100)));
+    // Cache key isolates results that aren't fungible across callers:
+    // session changes RCT-only filtering; regime affects scoring weights.
+    // Different `limit` callers share the same underlying ranking and
+    // slice differently at return time.
+    const key = `${session}|${regime ? 'regime' : 'noRegime'}`;
+    const now = Date.now();
+
+    if (this.cachedRanking && this.cachedRanking.key === key) {
+      if (now - this.cachedRanking.ts < RuleEngineService.RANKING_CACHE_TTL_MS) {
+        return sliced(this.cachedRanking.candidates);
+      }
+    }
+
+    if (this.inflightRanking) {
+      // A computation is already running for this tick — second-and-later
+      // callers await the same Promise instead of kicking off a parallel
+      // evaluation against the same watchlist.
+      return sliced(await this.inflightRanking);
+    }
+
+    const promise = this.computeRanking(stocks, regime, session);
+    this.inflightRanking = promise;
+    try {
+      const candidates = await promise;
+      this.cachedRanking = { candidates, ts: Date.now(), key };
+      return sliced(candidates);
+    } finally {
+      this.inflightRanking = null;
+    }
+  }
+
+  private async computeRanking(
+    stocks: StockState[],
+    regime: RegimeSnapshot | undefined,
+    session: 'pre' | 'rth' | 'post' | 'closed',
+  ): Promise<TradeCandidate[]> {
     const evaluated = await Promise.all(
       stocks.map(async (stock) => {
         const messageContext = messageService.getSymbolContext(stock.symbol);
         return this.evaluateStock(stock, messageContext, regime, session);
-      })
+      }),
     );
-
-    const candidates = evaluated.filter((candidate): candidate is TradeCandidate => candidate !== null);
-
+    const candidates = evaluated.filter(
+      (candidate): candidate is TradeCandidate => candidate !== null,
+    );
     candidates.sort((a, b) => b.score - a.score);
-    return candidates.slice(0, Math.max(1, Math.min(limit, 100)));
+    return candidates;
+  }
+
+  /** Test seam — drops cache + inflight slot so each test starts fresh. */
+  clearRankingCache(): void {
+    this.cachedRanking = null;
+    this.inflightRanking = null;
   }
 
   private async evaluateStock(
