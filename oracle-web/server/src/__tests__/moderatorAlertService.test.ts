@@ -19,6 +19,7 @@ import {
   parseModeratorAlertText,
   moderatorAlertService,
   mergeAndDedupe,
+  dropEmptyBodyPrepPosts,
   type ModeratorPost,
 } from '../services/moderatorAlertService.js';
 
@@ -475,7 +476,7 @@ describe('parseModeratorAlertText nav-menu and empty-body guards', () => {
     expect(posts).toHaveLength(0);
   });
 
-  it('drops an empty-body prep post (parser failure mode from 2026-05-05 diagnosis)', () => {
+  it('keeps empty-body prep posts in parse output so enrichment can fish for an Evernote URL', () => {
     const text = [
       'Pre Market Prep Note 5-5-2026',
       'Type',
@@ -484,10 +485,49 @@ describe('parseModeratorAlertText nav-menu and empty-body guards', () => {
       'May 5, 2026 4:37 AM',
     ].join('\n');
     const posts = parseModeratorAlertText(text);
-    // Empty-body prep posts are parser artifacts (room view is collapsed,
-    // only the title made it into innerText). Drop so a later well-formed
-    // capture for the same day isn't shadowed.
-    expect(posts).toHaveLength(0);
+    // The parser used to drop these directly. The Evernote enrichment
+    // path runs against `parseModeratorAlertText` output, so dropping
+    // here would shadow hydration. The deferred filter
+    // `dropEmptyBodyPrepPosts` is responsible for removing posts that
+    // are still empty after enrichment.
+    expect(posts).toHaveLength(1);
+    expect(posts[0].kind).toBe('pre_market_prep');
+    expect(posts[0].body).toBe('');
+  });
+
+  it('dropEmptyBodyPrepPosts drops a still-empty prep post but preserves other kinds', () => {
+    const empty: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-5-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-05T04:37:00.000Z',
+      body: '',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const headerOnlyDoubleDown: ModeratorPost = {
+      title: 'Double Down Note 4-23-2026',
+      kind: 'double_down',
+      author: 'Tim Bohen',
+      postedAt: '2026-04-23T10:00:00.000Z',
+      body: '',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const hydrated: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-6-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-06T04:30:00.000Z',
+      body: 'plenty of content from Evernote',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const out = dropEmptyBodyPrepPosts([empty, headerOnlyDoubleDown, hydrated]);
+    expect(out).toEqual([headerOnlyDoubleDown, hydrated]);
   });
 
   it('preserves header-only Double Down notes (legitimate moderator pattern)', () => {
