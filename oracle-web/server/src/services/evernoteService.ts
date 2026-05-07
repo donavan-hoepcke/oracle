@@ -120,16 +120,39 @@ export class EvernoteService {
         return null;
       }
       const context = contexts[0];
-      const page = await context.newPage();
+      // Reuse an already-open tab when Chrome has one for this URL. The
+      // Lite share is a React SPA — by the time the user (or a prior
+      // moderator-alert poll cycle) has the note open, the bundle has
+      // fetched, the SPA has hydrated, and the rendered DOM is sitting
+      // there ready to read. Skipping goto + hydration polling on this
+      // path is both faster and more reliable than opening a fresh tab
+      // and racing the bundle. The trade-off — that we read whatever
+      // version of the note is in the existing tab, even if Bohen has
+      // since edited it — is acceptable because Bohen doesn't edit
+      // prep notes after publishing.
+      const existing = context.pages().find((p) => p.url() === url);
+      const page = existing ?? (await context.newPage());
+      const isExisting = existing !== undefined;
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-        // Lite share viewer hydrates the note body via JS after first paint.
-        // A fixed `waitForTimeout` either over-waits (polls too late and
-        // returns the placeholder) or under-waits. Poll until the body has
-        // grown past the placeholder and the explicit "Loading note"
-        // string is gone, then proceed. If we hit the budget without
-        // hydrating, fall through and let the placeholder check below
-        // reject the result so we don't cache a stub for the day.
+        if (!isExisting) {
+          // 'networkidle' waits for the network to stay quiet for 500ms,
+          // which on a React SPA means the bundle has finished loading
+          // and the initial data fetches have settled. Far more reliable
+          // than 'domcontentloaded' for SPAs. Capped at the hydration
+          // budget so we don't block forever if the page never quiesces.
+          await page.goto(url, {
+            waitUntil: 'networkidle',
+            timeout: cfg.hydration_wait_ms,
+          }).catch(async () => {
+            // If 'networkidle' times out, fall back to 'domcontentloaded'
+            // and let the polling loop below decide whether the body
+            // hydrated. Better to capture something than to fail outright.
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+          });
+        }
+        // Polling loop: returns early when the body grows past the
+        // hydrated threshold and "Loading note" is gone. For an existing
+        // tab this typically returns on the first probe.
         await waitForHydration(page, cfg.hydration_wait_ms);
         const extracted = (await page.evaluate(`(() => {
           const selectors = ${JSON.stringify(NOTE_SELECTORS)};
@@ -172,7 +195,12 @@ export class EvernoteService {
           fetchedAt: new Date().toISOString(),
         };
       } finally {
-        await page.close().catch(() => {});
+        // Only close pages WE opened. Closing the user's tab would be
+        // hostile (they'd lose their place every poll cycle) and would
+        // also defeat the existing-tab reuse path on the next poll.
+        if (!isExisting) {
+          await page.close().catch(() => {});
+        }
       }
     } catch (err) {
       console.warn(
