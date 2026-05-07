@@ -135,6 +135,27 @@ export class EvernoteService {
       // This was the live failure on 2026-05-07 — `find()` returned the
       // first match (stale chrome) while the user's other tab had the
       // prep fully rendered.
+      // Helper: probe the maximum textContent length across the page's
+      // main frame AND any iframes / sub-frames. Lite share viewer renders
+      // the actual note body inside an embedded frame on some flows, so
+      // page.evaluate() against the main frame alone can return only the
+      // host page's chrome (~84 chars on 2026-05-07) while the rendered
+      // note sits in a child frame.
+      const measureRichness = async (p: import('playwright').Page): Promise<number> => {
+        let max = 0;
+        for (const frame of p.frames()) {
+          try {
+            const len = (await frame.evaluate(
+              `((document.body && document.body.textContent) || '').length`,
+            )) as number;
+            if (typeof len === 'number' && len > max) max = len;
+          } catch {
+            // detached/cross-origin frames throw — ignore and continue.
+          }
+        }
+        return max;
+      };
+
       const matches = context.pages().filter((p) => p.url() === url);
       let page;
       let isExisting = false;
@@ -142,11 +163,7 @@ export class EvernoteService {
         let best = matches[0];
         let bestLen = -1;
         for (const candidate of matches) {
-          const len = (
-            await candidate
-              .evaluate(`((document.body && document.body.textContent) || '').length`)
-              .catch(() => 0)
-          ) as number;
+          const len = await measureRichness(candidate).catch(() => 0);
           if (len > bestLen) {
             bestLen = len;
             best = candidate;
@@ -178,16 +195,35 @@ export class EvernoteService {
         // hydrated threshold and "Loading note" is gone. For an existing
         // tab this typically returns on the first probe.
         await waitForHydration(page, cfg.hydration_wait_ms);
+
+        // Walk every frame on the page (main + iframes) and pick the one
+        // with the longest textContent. Lite share renders the rendered
+        // note inside a sub-frame on some flows; the main frame holds
+        // only host chrome. Without this walk, page.evaluate against the
+        // main frame would return ~84 chars while the rendered note sat
+        // in a child frame the user could see.
+        const frames = page.frames();
+        let bestFrame = frames[0];
+        let bestFrameLen = -1;
+        for (const frame of frames) {
+          try {
+            const len = (await frame.evaluate(
+              `((document.body && document.body.textContent) || '').length`,
+            )) as number;
+            if (typeof len === 'number' && len > bestFrameLen) {
+              bestFrameLen = len;
+              bestFrame = frame;
+            }
+          } catch {
+            // detached/cross-origin/closed frames throw; skip.
+          }
+        }
+
         // textContent reads ALL DOM text regardless of CSS visibility,
         // including content that innerText filters out via display:none /
-        // visibility:hidden / overlay tricks. Live diagnosis on 2026-05-07
-        // showed the rendered prep was in the user's open tab DOM but
-        // innerText was returning only chrome ("Sign in / Reload page /
-        // Open in app", ~88 chars). Switching to textContent on the
-        // selector cascade — and on the body fallback — picks up the
-        // actual note. Placeholder rejection still catches chrome-only
-        // captures by length + chrome-string match.
-        const extracted = (await page.evaluate(`(() => {
+        // visibility:hidden / overlay tricks. Combined with the iframe
+        // walk above, this picks up Lite share's rendered note.
+        const extracted = (await bestFrame.evaluate(`(() => {
           const selectors = ${JSON.stringify(NOTE_SELECTORS)};
           for (const sel of selectors) {
             const el = document.querySelector(sel);
