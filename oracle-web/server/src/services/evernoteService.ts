@@ -217,13 +217,30 @@ function looksLikeSignInWall(body: string): boolean {
  */
 export function looksLikePlaceholder(body: string): boolean {
   if (body.includes('Loading note')) return true;
-  // Lite editor chrome with no real content yet — short body + the
-  // welcome banner is the giveaway.
-  if (
-    body.includes('Welcome to Evernote Lite editor') &&
-    body.length < HYDRATED_BODY_MIN_CHARS
-  ) {
-    return true;
+  if (body.length < HYDRATED_BODY_MIN_CHARS) {
+    // Any body shorter than the hydration threshold IS the placeholder
+    // when it also contains chrome strings the Lite share renders before
+    // the actual note paints. Real Bohen prep notes are several hundred
+    // to several thousand chars, so this is conservatively safe — a
+    // legitimate note that happens to be short can still be authored,
+    // just not via the lite share path.
+    //
+    // Strings observed across the 2026-05-07 / 2026-05-05 captures:
+    //   - "Welcome to Evernote Lite editor!"  (initial paint)
+    //   - "Loading note..."                   (handled above)
+    //   - "Sign in"                           (login chrome)
+    //   - "Open in app"                       (app-promo chrome)
+    //   - "Last sync"                         (sync banner)
+    //   - "Reload page"                       (offline / stale chrome)
+    if (
+      body.includes('Welcome to Evernote Lite editor') ||
+      body.includes('Sign in') ||
+      body.includes('Open in app') ||
+      body.includes('Last sync') ||
+      body.includes('Reload page')
+    ) {
+      return true;
+    }
   }
   return false;
 }
