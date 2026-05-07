@@ -126,13 +126,37 @@ export class EvernoteService {
       // fetched, the SPA has hydrated, and the rendered DOM is sitting
       // there ready to read. Skipping goto + hydration polling on this
       // path is both faster and more reliable than opening a fresh tab
-      // and racing the bundle. The trade-off — that we read whatever
-      // version of the note is in the existing tab, even if Bohen has
-      // since edited it — is acceptable because Bohen doesn't edit
-      // prep notes after publishing.
-      const existing = context.pages().find((p) => p.url() === url);
-      const page = existing ?? (await context.newPage());
-      const isExisting = existing !== undefined;
+      // and racing the bundle.
+      //
+      // Multiple-tab handling: Chrome can hold several tabs pointing at
+      // the same URL (e.g., user opened the note twice while debugging).
+      // Some may still be on chrome / stale; one will have the rendered
+      // note. Probe each candidate's body length and pick the richest.
+      // This was the live failure on 2026-05-07 — `find()` returned the
+      // first match (stale chrome) while the user's other tab had the
+      // prep fully rendered.
+      const matches = context.pages().filter((p) => p.url() === url);
+      let page;
+      let isExisting = false;
+      if (matches.length > 0) {
+        let best = matches[0];
+        let bestLen = -1;
+        for (const candidate of matches) {
+          const len = (
+            await candidate
+              .evaluate(`((document.body && document.body.textContent) || '').length`)
+              .catch(() => 0)
+          ) as number;
+          if (len > bestLen) {
+            bestLen = len;
+            best = candidate;
+          }
+        }
+        page = best;
+        isExisting = true;
+      } else {
+        page = await context.newPage();
+      }
       try {
         if (!isExisting) {
           // 'networkidle' waits for the network to stay quiet for 500ms,
