@@ -85,7 +85,8 @@ describe('AlpacaAdapter', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.type).toBe('limit');
-      expect(body.limit_price).toBe('0.58');
+      // Sub-$1 prices are formatted to 4 decimals (Alpaca's tick rule).
+      expect(body.limit_price).toBe('0.5800');
       expect(order.id).toBe('order-456');
     });
   });
@@ -131,9 +132,9 @@ describe('AlpacaAdapter', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.order_class).toBe('bracket');
-      expect(body.take_profit).toEqual({ limit_price: '0.94' });
+      expect(body.take_profit).toEqual({ limit_price: '0.9400' });
       // String(0.3) drops the trailing zero — Alpaca accepts either form.
-      expect(body.stop_loss).toEqual({ stop_price: '0.3' });
+      expect(body.stop_loss).toEqual({ stop_price: '0.3000' });
       // Identify legs by their type, not array position — defensive against
       // Alpaca ever changing the response ordering.
       expect(result.entry.id).toBe('parent-1');
@@ -168,7 +169,7 @@ describe('AlpacaAdapter', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       // String(0.5) → '0.5'; trailing zero dropped.
-      expect(body.limit_price).toBe('0.5');
+      expect(body.limit_price).toBe('0.5000');
     });
 
     it('throws when Alpaca response is missing one of the bracket legs', async () => {
@@ -215,7 +216,7 @@ describe('AlpacaAdapter', () => {
       const body = JSON.parse(init.body);
       // Alpaca preserves the leg id on PATCH; the bracket relationship
       // stays intact (target/stop OCO pair is still linked).
-      expect(body).toEqual({ stop_price: '0.55' });
+      expect(body).toEqual({ stop_price: '0.5500' });
       expect(newId).toBe('leg-stop');
     });
 

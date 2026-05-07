@@ -25,6 +25,31 @@ function headers(): Record<string, string> {
   };
 }
 
+/**
+ * Round a price to Alpaca's accepted tick increment before submit.
+ *
+ * Alpaca rejects sub-penny prices for stocks ≥ $1.00 (rule 612 / "minimum
+ * pricing increment"). Sub-$1 stocks are allowed 4-decimal precision.
+ * Our RCT rule sources prices from 1m IEX bars where 0.5¢ ticks are
+ * common in pre-market thin trading; submitting them verbatim produced
+ * "invalid stop_loss.stop_price 19.525. sub-penny increment does not
+ * fulfill minimum pricing criteria" rejections on 2026-05-07 (FSLY,
+ * ATRA). Rounding to penny on the way to the broker fixes that without
+ * changing the rule-engine's internal precision (used for display +
+ * R-multiple computation).
+ *
+ * Exported as `formatTickPrice` for testability.
+ */
+export function formatTickPrice(price: number): string {
+  if (!Number.isFinite(price) || price <= 0) return String(price);
+  // ≥ $1: 2 decimal places (whole cents).
+  // <  $1: 4 decimal places (Alpaca allows sub-penny here).
+  const decimals = price >= 1 ? 2 : 4;
+  const factor = decimals === 2 ? 100 : 10000;
+  const rounded = Math.round(price * factor) / factor;
+  return rounded.toFixed(decimals);
+}
+
 export class AlpacaAdapter implements BrokerAdapter {
   readonly name = 'alpaca' as const;
 
@@ -87,7 +112,7 @@ export class AlpacaAdapter implements BrokerAdapter {
       time_in_force: 'day',
     };
     if (params.type === 'limit' && params.limitPrice !== undefined) {
-      body.limit_price = String(params.limitPrice);
+      body.limit_price = formatTickPrice(params.limitPrice);
       if (params.extendedHours) body.extended_hours = true;
     }
     const res = await fetch(`${baseUrl()}/orders`, {
@@ -125,8 +150,8 @@ export class AlpacaAdapter implements BrokerAdapter {
       type: params.type,
       time_in_force: 'day',
       order_class: 'bracket',
-      take_profit: { limit_price: String(params.targetPrice) },
-      stop_loss: { stop_price: String(params.stopPrice) },
+      take_profit: { limit_price: formatTickPrice(params.targetPrice) },
+      stop_loss: { stop_price: formatTickPrice(params.stopPrice) },
     };
     if (params.type === 'limit') {
       if (params.entryLimitPrice === undefined) {
@@ -136,7 +161,7 @@ export class AlpacaAdapter implements BrokerAdapter {
         // diagnose from a log line.
         throw new Error('AlpacaAdapter.submitBracketOrder: limit entry requires entryLimitPrice');
       }
-      body.limit_price = String(params.entryLimitPrice);
+      body.limit_price = formatTickPrice(params.entryLimitPrice);
     }
     const res = await fetch(`${baseUrl()}/orders`, {
       method: 'POST',
@@ -177,7 +202,7 @@ export class AlpacaAdapter implements BrokerAdapter {
     const res = await fetch(`${baseUrl()}/orders/${stopOrderId}`, {
       method: 'PATCH',
       headers: headers(),
-      body: JSON.stringify({ stop_price: String(newStopPrice) }),
+      body: JSON.stringify({ stop_price: formatTickPrice(newStopPrice) }),
     });
     if (!res.ok) {
       const text = await res.text();
