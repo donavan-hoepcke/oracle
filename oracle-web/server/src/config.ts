@@ -90,6 +90,17 @@ const configSchema = z.object({
             ]),
           poll_interval_sec: z.number().positive().default(180),
           hydration_wait_ms: z.number().int().nonnegative().default(5_000),
+          // Bohen often posts only a "Pre Market Prep Note <date>" header to
+          // the chat room and links to the real prep body in Evernote. With
+          // this enabled, the moderator-alert pipeline opens the linked
+          // Evernote share via Playwright/CDP and uses the note text as the
+          // post body so downstream consumers see the full prep content.
+          evernote: z
+            .object({
+              enabled: z.boolean().default(false),
+              hydration_wait_ms: z.number().int().nonnegative().default(4_000),
+            })
+            .default({}),
         })
         .default({}),
       incomeTraderChat: z

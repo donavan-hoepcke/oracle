@@ -54,6 +54,16 @@ bot:
       - "https://university.stockstotrade.com/room/daily-market-profits"
     poll_interval_sec: 180
     hydration_wait_ms: 5000
+    evernote:
+      # Bohen pastes Evernote share URLs into the prep room and the actual
+      # prep body lives in the note. When on, the moderator-alert pipeline
+      # opens the linked share via Playwright/CDP and uses the note text as
+      # the post body so downstream (rawStreamService -> stock_o_bot) sees
+      # the full prep content instead of just a header.
+      enabled: true
+      # Evernote's editor hydrates client-side; 4s is conservative for the
+      # public lite.evernote.com share viewer.
+      hydration_wait_ms: 4000
   incomeTraderChat:
     enabled: true
     url: "https://university.stockstotrade.com/room/daily-income-trader-chat"

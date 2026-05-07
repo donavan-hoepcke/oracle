@@ -8,6 +8,7 @@ vi.mock('../config.js', () => ({
         urls: [],
         poll_interval_sec: 120,
         hydration_wait_ms: 0,
+        evernote: { enabled: false, hydration_wait_ms: 0 },
       },
       incomeTraderChat: {
         enabled: false,
