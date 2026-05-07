@@ -116,6 +116,30 @@ describe('enrichWithEvernoteBody', () => {
     }
   });
 
+  it('skips enrichment for prep posts older than 36h (cap on per-cycle Chrome tabs)', async () => {
+    // Regression for the 2026-05-07 about:blank flurry: chat room shows
+    // 9+ days of historical prep posts; without an age gate, every poll
+    // cycle fired 9 parallel Evernote fetches, each opening a fresh
+    // Chrome tab. Only today's prep is operationally useful.
+    const fetchSpy = vi.spyOn(evernoteService, 'fetchNote');
+    fetchSpy.mockClear();
+    const oldPost: ModeratorPost = {
+      title: 'Pre Market Prep Note 4-27-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      // 10+ days old — well past the 36h cutoff.
+      postedAt: '2026-04-27T05:21:00.000Z',
+      body: 'short stub',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const rawWithUrl = `${oldPost.title}\nhttps://lite.evernote.com/note/old-uuid-1234567890`;
+    await enrichWithEvernoteBody([oldPost], rawWithUrl);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
   it('hydrates a title-only chat stub from an Evernote URL elsewhere in rawText', async () => {
     // Real-world failure mode (2026-05-04 / 2026-05-05 logs): the chat
     // innerText capture has only the title + footer — the URL is rendered

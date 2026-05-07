@@ -8,6 +8,15 @@ import { evernoteService, findEvernoteUrlForTitle } from './evernoteService.js';
 // in-chat prep (rare but possible) is not re-fetched.
 const EVERNOTE_MIN_BODY_LENGTH = 200;
 
+// Only attempt Evernote enrichment for prep posts within this window.
+// Bohen's chat room keeps weeks of historical prep posts visible, but only
+// today's matters for trading; older preps either won't hydrate (the lite
+// share has expired) or aren't operationally useful. Without this gate
+// every poll cycle re-fetches all visible historical preps in parallel,
+// which opens N Chrome tabs every 180s and is what the user noticed as a
+// flurry of about:blank pages on 2026-05-07.
+const EVERNOTE_ENRICH_MAX_AGE_MS = 36 * 60 * 60 * 1000;
+
 export interface ModeratorSignal {
   symbol: string;
   signal: number | null;
@@ -539,10 +548,16 @@ export async function enrichWithEvernoteBody(
   rawText: string,
 ): Promise<ModeratorPost[]> {
   if (!config.bot.moderatorAlerts.evernote.enabled) return posts;
+  const cutoff = Date.now() - EVERNOTE_ENRICH_MAX_AGE_MS;
   return Promise.all(
     posts.map(async (post) => {
       if (post.kind !== 'pre_market_prep') return post;
       if (post.body.length >= EVERNOTE_MIN_BODY_LENGTH) return post;
+      // Skip historical preps. Today's prep is the only one any consumer
+      // (bot, UI, signalsService) acts on; older preps have either rolled
+      // off Bohen's lite share or are operationally irrelevant.
+      const postedAtMs = post.postedAt ? Date.parse(post.postedAt) : NaN;
+      if (Number.isFinite(postedAtMs) && postedAtMs < cutoff) return post;
       const url = findEvernoteUrlForTitle(post.title, rawText);
       if (!url) return post;
       const note = await evernoteService.fetchNote(url);

@@ -40,23 +40,44 @@ const HYDRATION_POLL_MS = 500;
 // before the actual note paints (live captures from the bug were ~86 chars).
 // Use as a "is this hydrated" heuristic alongside the placeholder strings.
 const HYDRATED_BODY_MIN_CHARS = 300;
+// How long we suppress retries for a URL that returned null (placeholder,
+// sign-in wall, timeout, CDP failure). Without this the moderator-alert
+// poll cycle (every 180s) re-fires fetches against URLs that won't
+// hydrate, opening a fresh Chrome tab each time. 90s lets us recover
+// quickly when an outage clears while preventing per-cycle thrash.
+const FAILURE_TTL_MS = 90_000;
 
 export class EvernoteService {
   private cache = new Map<string, EvernoteNote>();
   private inFlight = new Map<string, Promise<EvernoteNote | null>>();
+  // URL → unix-ms when the most recent fetch returned null. Looked up
+  // before doFetch and short-circuits to null until the entry expires.
+  private failureCache = new Map<string, number>();
 
   async fetchNote(url: string): Promise<EvernoteNote | null> {
     const cached = this.cache.get(url);
     if (cached) return cached;
     const existing = this.inFlight.get(url);
     if (existing) return existing;
+    // Short-circuit recent failures so 9 stale-prep enrichments don't
+    // each burn a Chrome tab + 12s hydration budget every 180s.
+    const failedAt = this.failureCache.get(url);
+    if (failedAt !== undefined && Date.now() - failedAt < FAILURE_TTL_MS) {
+      return null;
+    }
+    if (failedAt !== undefined) this.failureCache.delete(url);
 
     const promise = this.doFetch(url).finally(() => {
       this.inFlight.delete(url);
     });
     this.inFlight.set(url, promise);
     const note = await promise;
-    if (note) this.cache.set(url, note);
+    if (note) {
+      this.cache.set(url, note);
+      this.failureCache.delete(url);
+    } else {
+      this.failureCache.set(url, Date.now());
+    }
     return note;
   }
 
@@ -69,6 +90,7 @@ export class EvernoteService {
   clearCache(): void {
     this.cache.clear();
     this.inFlight.clear();
+    this.failureCache.clear();
   }
 
   /** Test seam — count cached entries. Used by `evernoteService.test.ts` to
