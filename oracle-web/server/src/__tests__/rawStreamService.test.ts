@@ -235,6 +235,69 @@ describe('RawStreamService.bind() integration', () => {
     expect(types.filter((t) => t === 'mod_alert')).toHaveLength(2);
   });
 
+  it('re-emits a post when its body grows from stub to hydrated (Evernote-prep flow)', () => {
+    // Regression for 2026-05-07: today's prep first reached
+    // moderatorAlertService with an empty/stub body (chat-room
+    // innerText didn't see the iframe content yet). It emitted once,
+    // then the (postedAt, title) dedup gate suppressed every subsequent
+    // emit. When a later poll DID hydrate the body via Evernote
+    // (2,498 chars), the dedup gate dropped the upgrade silently — and
+    // the bot, already connected, never received the hydrated version.
+    //
+    // Fix: track body length per key and re-emit when a previously-stubby
+    // post crosses the hydrated threshold.
+    const seen: { type: string; bodyExcerptLen: number }[] = [];
+    rawStreamService.subscribe((e) => {
+      if (e.type === 'mod_alert') {
+        const p = e.payload as { body_excerpt?: string };
+        seen.push({ type: e.type, bodyExcerptLen: (p.body_excerpt ?? '').length });
+      }
+    });
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+
+    const stub: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: 'short stub body',
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const hydrated: ModeratorPost = { ...stub, body: 'A'.repeat(2500) };
+
+    moderatorAlertService.ingestPosts([stub]);    // emit 1
+    moderatorAlertService.ingestPosts([stub]);    // dedup, no emit
+    moderatorAlertService.ingestPosts([hydrated]); // hydration upgrade → emit 2
+    moderatorAlertService.ingestPosts([hydrated]); // dedup, no further emit
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0].bodyExcerptLen).toBeLessThan(50);
+    expect(seen[1].bodyExcerptLen).toBeGreaterThan(200);
+  });
+
+  it('does not re-emit when a hydrated body shrinks back to a stub (only stub→hydrated triggers)', () => {
+    const types: string[] = [];
+    rawStreamService.subscribe((e) => types.push(e.type));
+    rawStreamService.bindModeratorAlertService(moderatorAlertService);
+    const big: ModeratorPost = {
+      title: 'Pre Market Prep Note 5-7-2026',
+      kind: 'pre_market_prep',
+      author: 'Tim Bohen',
+      postedAt: '2026-05-07T08:30:00.000Z',
+      body: 'A'.repeat(2500), // already hydrated on first emit
+      signal: null,
+      backups: [],
+      symbols: [],
+    };
+    const stubLater: ModeratorPost = { ...big, body: 'short' };
+    moderatorAlertService.ingestPosts([big]);       // emit 1
+    moderatorAlertService.ingestPosts([stubLater]); // body shrank — no re-emit
+    moderatorAlertService.ingestPosts([big]);       // back to big — no re-emit either
+    expect(types.filter((t) => t === 'mod_alert')).toHaveLength(1);
+  });
+
   it('re-emits a previously-seen post once the dedup TTL has elapsed', () => {
     // Regression for the 2026-05-07 mod_alert dedup-for-life bug. An
     // unbounded Set caused today's prep to emit exactly once at first

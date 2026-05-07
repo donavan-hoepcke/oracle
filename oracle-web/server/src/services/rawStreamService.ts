@@ -118,14 +118,24 @@ export class RawStreamService {
   // cycle, which spams downstream consumers (~25x duplicate evaluations).
   //
   // Keyed by `${postedAt}|${title}` (posts have no stable id from the
-  // upstream page) → first-emit timestamp. Entries older than DEDUP_TTL_MS
-  // are pruned on each onAlerts call so the map can't grow unbounded
-  // across days, and so a post that's still being re-scraped after a
-  // restart can re-emit once per TTL window. The bot-side dedupes on its
-  // own (by postedAt, title), so the at-most-once-per-day re-emit is a
-  // no-op for unchanged posts. Cleared by reset() for tests.
-  private seenModAlertKeys = new Map<string, number>();
+  // upstream page) → { ts: first-emit timestamp, bodyLen: body length at
+  // last emit }. The bodyLen lets us re-emit a post when it has been
+  // hydrated from a stub to substantive content (Bohen's chat-room prep
+  // posts come through empty-body first, then the next poll picks up
+  // the Evernote-hydrated 2k+ char body — the bot needs to receive the
+  // hydrated version even though the (postedAt, title) hasn't changed).
+  // Entries older than DEDUP_TTL_MS are pruned on each onAlerts call so
+  // the map can't grow unbounded across days. Cleared by reset() for
+  // tests.
+  private seenModAlertKeys = new Map<string, { ts: number; bodyLen: number }>();
   private static readonly MOD_ALERT_DEDUP_TTL_MS = 24 * 60 * 60 * 1000;
+  // Body-length threshold above which a previously-stubby post is
+  // considered "hydrated" and should re-emit. Picked at 200 because
+  // Bohen's chat-room stubs (title + Evernote URL link text) are
+  // ~40–90 chars and his hydrated prep bodies run several thousand;
+  // 200 sits well between them. Same constant the moderator-alert
+  // pipeline uses to decide whether to attempt Evernote enrichment.
+  private static readonly MOD_ALERT_HYDRATED_MIN_BODY = 200;
   // Provider for the moderator-alert snapshot, set by bindModeratorAlertService.
   // The WS handler calls emitModeratorSnapshotTo() on each new client connect
   // so a bot connecting mid-afternoon sees today's already-known prep posts
@@ -180,18 +190,31 @@ export class RawStreamService {
       // being scraped today (rare; happens when the room hasn't rolled the
       // post off the page) and needs to re-emit so a fresh subscriber's
       // ring-buffer replay sees it.
-      for (const [key, t] of this.seenModAlertKeys) {
-        if (now - t > RawStreamService.MOD_ALERT_DEDUP_TTL_MS) {
+      for (const [key, entry] of this.seenModAlertKeys) {
+        if (now - entry.ts > RawStreamService.MOD_ALERT_DEDUP_TTL_MS) {
           this.seenModAlertKeys.delete(key);
         }
       }
       for (const post of posts) {
-        const p = (post ?? {}) as { postedAt?: unknown; title?: unknown };
+        const p = (post ?? {}) as { postedAt?: unknown; title?: unknown; body?: unknown };
         const postedAt = typeof p.postedAt === 'string' ? p.postedAt : '';
         const title = typeof p.title === 'string' ? p.title : '';
+        const body = typeof p.body === 'string' ? p.body : '';
         const key = `${postedAt}|${title}`;
-        if (this.seenModAlertKeys.has(key)) continue;
-        this.seenModAlertKeys.set(key, now);
+        const seen = this.seenModAlertKeys.get(key);
+        // Re-emit triggers when this post crosses from stub to hydrated:
+        // previous emit was below the hydrated threshold, current body
+        // is at-or-above. Catches the Bohen prep flow exactly — first
+        // poll captures the chat stub and emits an empty-body event;
+        // when Evernote hydration succeeds on a later poll, we re-emit
+        // the same (postedAt, title) with the substantive body so live
+        // subscribers get the hydrated version without reconnecting.
+        const isHydrationUpgrade =
+          seen !== undefined &&
+          seen.bodyLen < RawStreamService.MOD_ALERT_HYDRATED_MIN_BODY &&
+          body.length >= RawStreamService.MOD_ALERT_HYDRATED_MIN_BODY;
+        if (seen !== undefined && !isHydrationUpgrade) continue;
+        this.seenModAlertKeys.set(key, { ts: now, bodyLen: body.length });
         this.publish({ type: 'mod_alert', payload: shapeModAlertForBot(post) });
       }
     });
