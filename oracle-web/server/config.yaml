@@ -61,9 +61,13 @@ bot:
       # the post body so downstream (rawStreamService -> stock_o_bot) sees
       # the full prep content instead of just a header.
       enabled: true
-      # Evernote's editor hydrates client-side; 4s is conservative for the
-      # public lite.evernote.com share viewer.
-      hydration_wait_ms: 4000
+      # Hydration BUDGET (not a fixed sleep): evernoteService polls the
+      # page every 500ms and breaks out as soon as the body has grown past
+      # the placeholder + "Loading note" is gone. 4s was too short to
+      # catch the Lite share viewer's first full paint on 2026-05-07 —
+      # 12s gives generous headroom on slow days while still bounding
+      # the worst-case poll latency.
+      hydration_wait_ms: 12000
   incomeTraderChat:
     enabled: true
     url: "https://university.stockstotrade.com/room/daily-income-trader-chat"

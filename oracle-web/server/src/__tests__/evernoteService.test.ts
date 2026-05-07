@@ -19,6 +19,7 @@ import {
   EvernoteService,
   findEvernoteUrls,
   findEvernoteUrlForTitle,
+  looksLikePlaceholder,
 } from '../services/evernoteService.js';
 
 describe('findEvernoteUrls', () => {
@@ -60,6 +61,53 @@ https://lite.evernote.com/note/bbbbbbbb-5555-6666-7777-888888888888`;
 
   it('returns null when no Evernote URL exists', () => {
     expect(findEvernoteUrlForTitle('Pre Market Prep', 'no urls here')).toBeNull();
+  });
+});
+
+describe('looksLikePlaceholder', () => {
+  it('flags the actual stub captured in production on 2026-05-07', () => {
+    // Verbatim from /api/moderator-alerts after the bug surfaced — 86
+    // chars of chrome + title + "Sign in", no real note content.
+    const stub = `Welcome to Evernote Lite editor!
+Loading note...
+Pre Market Prep Note 5-7-2026
+Sign in`;
+    expect(looksLikePlaceholder(stub)).toBe(true);
+  });
+
+  it('flags the bare "Loading note" string regardless of length', () => {
+    const stub = 'something else'.repeat(100) + ' Loading note... ' + 'more'.repeat(50);
+    expect(looksLikePlaceholder(stub)).toBe(true);
+  });
+
+  it('flags the Lite editor banner when total body is short', () => {
+    const stub = 'Welcome to Evernote Lite editor!\nSome chrome\nSign in';
+    expect(looksLikePlaceholder(stub)).toBe(true);
+  });
+
+  it('does NOT flag a fully-hydrated note that just happens to mention "loading"', () => {
+    // A real Bohen prep is several hundred chars and contains structured
+    // content. Mentioning "loading" in narrative shouldn't trip the gate
+    // — only the literal "Loading note" hydration string does.
+    const real = `Pre Market Prep Note 5-7-2026
+
+Today's primary watch: $WATCHME — clean breakout above the prior session high.
+Look for buyers stepping in around the prior pivot, with size confirming.
+
+Backups:
+$BACKUP1 — basing pattern, watching $1.85 reclaim
+$BACKUP2 — sympathy play if sector breaks out (sector also showed loading dynamics yesterday)
+
+Notes on regime: SPY held the 50-day yesterday on close. Risk-on tilt unless we lose $580 on SPY pre-market.`;
+    expect(looksLikePlaceholder(real)).toBe(false);
+  });
+
+  it('does NOT flag a long body that contains the Lite banner (defensive — partial hydration)', () => {
+    // If body length is past the threshold, even if banner is still
+    // visible, treat it as legitimately hydrated. Reduces false positives
+    // when Evernote's chrome bleeds into a real note capture.
+    const partial = 'Welcome to Evernote Lite editor!\n' + 'real prep content '.repeat(50);
+    expect(looksLikePlaceholder(partial)).toBe(false);
   });
 });
 
