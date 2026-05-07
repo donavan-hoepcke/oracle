@@ -7,6 +7,7 @@ import { executionService } from './services/executionService.js';
 import { floatMapService } from './services/floatMapService.js';
 import { moderatorAlertService } from './services/moderatorAlertService.js';
 import { messageService } from './services/messageService.js';
+import { sessionLevelsService } from './services/sessionLevelsService.js';
 
 /**
  * Bot-consumption surface for stock_o_bot. Localhost-only for v1; no auth.
@@ -40,6 +41,23 @@ export function registerRawApi(app: Express): void {
       const positions = await brokerService.getPositions().catch(() => []);
       const candidates = await ruleEngineService.getRankedCandidates(stocks, 50).catch(() => []);
 
+      const stockState = stocks.find((s) => s.symbol === symbol) ?? null;
+      const sessionLevels = await sessionLevelsService
+        .compute(symbol, {
+          isOnWatchlist: stockState !== null,
+          lastPrice: stockState?.currentPrice ?? null,
+        })
+        .catch((err: unknown) => {
+          // The bar source can fail (rate-limit, transient network). The
+          // bot-side contract is "fields default to null with reason" —
+          // we simply omit the blocks rather than 500 the whole detail.
+          console.warn(
+            `[session-levels] compute failed for ${symbol}:`,
+            err instanceof Error ? err.message : err,
+          );
+          return { premarket: null, indicators: null };
+        });
+
       const detail = buildSymbolDetail({
         symbol,
         stocks,
@@ -57,6 +75,7 @@ export function registerRawApi(app: Express): void {
           .slice(0, 50),
         ledger: executionService.getLedger(),
         positions,
+        sessionLevels,
       });
 
       res.json({ ts: new Date().toISOString(), symbol, detail });
