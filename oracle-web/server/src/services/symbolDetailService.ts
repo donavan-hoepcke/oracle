@@ -10,6 +10,7 @@ import {
 } from './moderatorAlertService.js';
 import { MessageEvent, SymbolMessageContext } from './messageService.js';
 import type { BrokerPosition } from '../types/broker.js';
+import type { PremarketLevels, SessionIndicators } from './sessionLevelsService.js';
 
 export interface ModeratorBackupMention extends ModeratorBackup {
   postTitle: string;
@@ -57,6 +58,15 @@ export interface SymbolDetail {
   messageContext: SymbolMessageContext;
   recentMessages: MessageEvent[];
   closedTrades: TradeLedgerEntry[];
+  /** Premarket session extremes, frozen at 09:30 ET. Null when no IEX
+   *  activity in 04:00–09:30 ET on `asOf`'s trading day, or when the
+   *  Alpaca data source isn't configured. Field is additive — pre-2026-05
+   *  consumers ignore it. */
+  premarket: PremarketLevels | null;
+  /** Session-level indicators for the current ET trading day. RTH session
+   *  VWAP only; pre/post VWAP intentionally not exposed here. Frozen at
+   *  16:00 ET. Field is additive. */
+  indicators: SessionIndicators | null;
 }
 
 export interface SymbolDetailInputs {
@@ -74,6 +84,10 @@ export interface SymbolDetailInputs {
   ledger: TradeLedgerEntry[];
   positions: BrokerPosition[];
   messageLookbackMs?: number;
+  /** Pre-computed by the caller (await sessionLevelsService.compute(...))
+   *  so `buildSymbolDetail` can stay synchronous. Optional — older callers
+   *  that don't supply this surface `premarket: null, indicators: null`. */
+  sessionLevels?: { premarket: PremarketLevels | null; indicators: SessionIndicators | null };
 }
 
 function makeExcerpt(body: string, symbol: string): string {
@@ -179,5 +193,7 @@ export function buildSymbolDetail(inputs: SymbolDetailInputs): SymbolDetail {
     messageContext: inputs.messageContext,
     recentMessages: inputs.recentMessages,
     closedTrades,
+    premarket: inputs.sessionLevels?.premarket ?? null,
+    indicators: inputs.sessionLevels?.indicators ?? null,
   };
 }
