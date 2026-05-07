@@ -104,6 +104,20 @@ execution:
   trailing_mfe_activate_r: 0.5
   trailing_mfe_giveback_pct: 0.5
   eod_flatten_time: "15:50"
+  extended_hours:
+    # Allow RCT entries during Alpaca's pre-market (04:00–09:30 ET) and
+    # post-market (16:00–20:00 ET) sessions. Limit orders only, simple
+    # (non-bracket) entries with bot-managed exits.
+    enabled: true
+    # Refuse new entries in the last 15 min of post-market — too little
+    # time left to manage an exit before the session ends. Pre-market
+    # has no equivalent buffer because RTH (with bracket OCO promotion)
+    # starts immediately at 09:30.
+    no_entry_buffer_minutes_before_close: 15
+    # Half-size positions in ext-hours to reduce exposure to wider spreads.
+    size_cap_pct: 0.5
+    # 25% wider stop on ext-hours entries to absorb thin-session slippage.
+    stop_buffer_pct: 0.25
   float_rotation:
     enabled: true
     score_bump_base: 10

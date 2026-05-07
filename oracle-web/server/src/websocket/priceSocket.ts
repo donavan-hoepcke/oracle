@@ -305,17 +305,35 @@ class PriceSocketServer {
       }
     }
 
-    // Skip price fetching if market is closed (but still allow manual refresh)
-    if (!marketStatus.isOpen) {
-      console.log('Market closed, skipping price fetch');
+    // Session-aware polling: in 'closed' (overnight, weekends) we skip
+    // entirely — broker reconcile has already run above. In 'pre'/'post'
+    // we keep polling prices so RCT entries can fire, but skip the
+    // RTH-only subsystems (stair-step, sector hotness, regime). RTH
+    // runs the full pipeline.
+    const { getMarketSession } = await import('../services/marketHoursService.js');
+    const session = getMarketSession();
+    const extEnabled =
+      config.execution.enabled && config.execution.extended_hours.enabled;
+
+    if (session === 'closed') {
+      console.log('Market closed (outside extended hours), skipping price fetch');
+      return;
+    }
+    if ((session === 'pre' || session === 'post') && !extEnabled) {
+      console.log(`Session is ${session} but extended_hours.enabled=false; skipping price fetch`);
       return;
     }
 
-    console.log(`Fetching prices for ${symbols.length} symbols...`);
+    console.log(`Fetching prices for ${symbols.length} symbols (session=${session})...`);
     const prices = await getPrices(symbols);
 
-    // Update stair-step signals for a subset of symbols (rate limiting)
-    const symbolsToUpdate = stairStepService.getNextSymbolsToUpdate(symbols, 2);
+    // Stair-step signals are computed from intraday volume that doesn't
+    // exist outside RTH — skip them in pre/post to avoid spending Alpaca
+    // tokens on bars that won't yield meaningful signals. Empty array
+    // outside RTH means the per-symbol loop below treats every symbol
+    // as "not updated this cycle" and reads cached signal state.
+    const symbolsToUpdate: string[] =
+      session === 'rth' ? stairStepService.getNextSymbolsToUpdate(symbols, 2) : [];
     for (const symbol of symbolsToUpdate) {
       try {
         const signalState = await stairStepService.updateSymbol(symbol);
@@ -401,13 +419,15 @@ class PriceSocketServer {
       }
     }
 
-    // Get ranked candidates for alerts and execution
+    // Get ranked candidates for alerts and execution. Session is forwarded
+    // so the rule engine knows to gate non-RCT setups in pre/post.
     let candidates: Awaited<ReturnType<typeof ruleEngineService.getRankedCandidates>> = [];
     try {
       candidates = await ruleEngineService.getRankedCandidates(
         Array.from(this.stockStates.values()),
         20,
         regimeSnapshot ?? undefined,
+        session,
       );
       for (const candidate of candidates) {
         // Only alert for top-scoring setups, score threshold can be tuned
@@ -437,6 +457,7 @@ class PriceSocketServer {
           candidates,
           Array.from(this.stockStates.values()),
           regimeSnapshot ?? undefined,
+          session,
         );
         this.broadcast({
           type: 'trade_update',

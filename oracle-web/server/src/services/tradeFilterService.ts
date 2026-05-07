@@ -2,6 +2,7 @@ import { config } from '../config.js';
 import { TradeCandidate as BaseTradeCandidate } from './ruleEngineService.js';
 import { floatMapService } from './floatMapService.js';
 import type { RegimeSnapshot } from './regimeService.js';
+import { getMarketSession, minutesUntilSessionEnd, type MarketSession } from './marketHoursService.js';
 
 type TradeCandidate = BaseTradeCandidate & {
   suggestedEntry: number;
@@ -42,8 +43,35 @@ class TradeFilterService {
     candidate: TradeCandidate,
     account: AccountState,
     regime?: RegimeSnapshot,
+    /** Session override for tests — defaults to live wall-clock session. */
+    session: MarketSession = getMarketSession(),
   ): FilterResult {
     const exec = config.execution;
+
+    // Extended-hours guards: only RCT eligible, and refuse new entries
+    // in the last N minutes of post-market — too little time left to
+    // manage an exit before the session ends.
+    if (session === 'pre' || session === 'post') {
+      if (!exec.extended_hours.enabled) {
+        return { passed: false, reason: 'extended hours disabled in config' };
+      }
+      if (candidate.setup !== 'red_candle_theory') {
+        return {
+          passed: false,
+          reason: `setup ${candidate.setup} not eligible in ext-hours (RCT-only)`,
+        };
+      }
+      if (session === 'post') {
+        const remaining = minutesUntilSessionEnd();
+        const buffer = exec.extended_hours.no_entry_buffer_minutes_before_close;
+        if (remaining !== null && remaining < buffer) {
+          return {
+            passed: false,
+            reason: `ext-hours late-session buffer (${remaining.toFixed(0)}m before post-market close, requires ≥${buffer}m)`,
+          };
+        }
+      }
+    }
 
     const dailyLoss = account.dailyRealizedPnl + account.dailyUnrealizedPnl;
     const drawdownPct = account.startOfDayEquity > 0

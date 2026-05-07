@@ -66,3 +66,61 @@ export function getMarketStatus(): MarketStatus {
 export function isMarketOpen(): boolean {
   return getMarketStatus().isOpen;
 }
+
+/**
+ * Session-aware market state used by the extended-hours RCT path.
+ *
+ *   'pre'    — 04:00 ET ≤ now < open  (Alpaca pre-market)
+ *   'rth'    — open ≤ now < close      (regular trading hours; same as isOpen)
+ *   'post'   — close ≤ now < 20:00 ET  (Alpaca post-market)
+ *   'closed' — outside the above, including weekends
+ *
+ * Pre/post boundaries are Alpaca's documented extended-hours window. RTH
+ * boundaries come from `config.market_hours.{open,close}` so the existing
+ * isOpen behavior is preserved exactly.
+ */
+export type MarketSession = 'pre' | 'rth' | 'post' | 'closed';
+
+const PRE_START_MINUTES = 4 * 60;        // 04:00 ET
+const POST_END_MINUTES = 20 * 60;        // 20:00 ET
+
+export function getMarketSession(now: Date = new Date()): MarketSession {
+  const zoned = toZonedTime(now, config.market_hours.timezone);
+  const day = zoned.getDay();
+  if (day === 0 || day === 6) return 'closed';
+  const open = parseTime(config.market_hours.open);
+  const close = parseTime(config.market_hours.close);
+  const minutes = zoned.getHours() * 60 + zoned.getMinutes();
+  const openMin = open.hours * 60 + open.minutes;
+  const closeMin = close.hours * 60 + close.minutes;
+  if (minutes >= openMin && minutes < closeMin) return 'rth';
+  if (minutes >= PRE_START_MINUTES && minutes < openMin) return 'pre';
+  if (minutes >= closeMin && minutes < POST_END_MINUTES) return 'post';
+  return 'closed';
+}
+
+export function isExtendedHours(now: Date = new Date()): boolean {
+  const s = getMarketSession(now);
+  return s === 'pre' || s === 'post';
+}
+
+/**
+ * Minutes remaining until the current session ends. Returns null when
+ * we're not in an active session (i.e. session === 'closed').
+ * Used by tradeFilterService to refuse new entries in the last N minutes
+ * of post-market — no time left to manage an exit before session end.
+ */
+export function minutesUntilSessionEnd(now: Date = new Date()): number | null {
+  const session = getMarketSession(now);
+  if (session === 'closed') return null;
+  const zoned = toZonedTime(now, config.market_hours.timezone);
+  const minutes = zoned.getHours() * 60 + zoned.getMinutes();
+  const open = parseTime(config.market_hours.open);
+  const close = parseTime(config.market_hours.close);
+  const openMin = open.hours * 60 + open.minutes;
+  const closeMin = close.hours * 60 + close.minutes;
+  if (session === 'pre') return openMin - minutes;
+  if (session === 'rth') return closeMin - minutes;
+  // session === 'post'
+  return POST_END_MINUTES - minutes;
+}
