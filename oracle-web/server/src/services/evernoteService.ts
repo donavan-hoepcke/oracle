@@ -154,22 +154,31 @@ export class EvernoteService {
         // hydrated threshold and "Loading note" is gone. For an existing
         // tab this typically returns on the first probe.
         await waitForHydration(page, cfg.hydration_wait_ms);
+        // textContent reads ALL DOM text regardless of CSS visibility,
+        // including content that innerText filters out via display:none /
+        // visibility:hidden / overlay tricks. Live diagnosis on 2026-05-07
+        // showed the rendered prep was in the user's open tab DOM but
+        // innerText was returning only chrome ("Sign in / Reload page /
+        // Open in app", ~88 chars). Switching to textContent on the
+        // selector cascade — and on the body fallback — picks up the
+        // actual note. Placeholder rejection still catches chrome-only
+        // captures by length + chrome-string match.
         const extracted = (await page.evaluate(`(() => {
           const selectors = ${JSON.stringify(NOTE_SELECTORS)};
           for (const sel of selectors) {
             const el = document.querySelector(sel);
-            const text = el && el.innerText ? el.innerText.trim() : '';
+            const text = el && el.textContent ? el.textContent.trim() : '';
             if (text.length > 0) {
               const titleEl = el.querySelector('h1');
               return {
-                title: (titleEl && titleEl.innerText ? titleEl.innerText.trim() : ''),
-                body: el.innerText,
+                title: (titleEl && titleEl.textContent ? titleEl.textContent.trim() : ''),
+                body: el.textContent,
               };
             }
           }
           return {
             title: document.title || '',
-            body: (document.body && document.body.innerText) || '',
+            body: (document.body && document.body.textContent) || '',
           };
         })()`)) as { title: string; body: string };
         const body = (extracted.body ?? '').trim();
@@ -285,7 +294,11 @@ async function waitForHydration(
 ): Promise<void> {
   const deadline = Date.now() + budgetMs;
   while (Date.now() < deadline) {
-    const probe = (await page.evaluate(`((document.body && document.body.innerText) || '')`)) as string;
+    // textContent vs innerText: see doFetch comment for why textContent —
+    // CSS overlays in the Lite share viewer can hide rendered note text
+    // from innerText while leaving it in the DOM. Polling against
+    // textContent makes the "is it hydrated yet?" check honest.
+    const probe = (await page.evaluate(`((document.body && document.body.textContent) || '')`)) as string;
     if (
       typeof probe === 'string' &&
       probe.length >= HYDRATED_BODY_MIN_CHARS &&
