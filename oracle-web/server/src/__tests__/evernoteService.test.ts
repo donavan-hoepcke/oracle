@@ -109,6 +109,26 @@ Notes on regime: SPY held the 50-day yesterday on close. Risk-on tilt unless we 
     const partial = 'Welcome to Evernote Lite editor!\n' + 'real prep content '.repeat(50);
     expect(looksLikePlaceholder(partial)).toBe(false);
   });
+
+  it('flags the actual 78-char chrome captured on 2026-05-07 (after PR #100 hrefs unblocked the URL)', () => {
+    // Verbatim from /api/moderator-alerts after the href-extraction fix.
+    // The note is reachable but Evernote serves a sync/sign-in banner
+    // instead of the body. Without this gate, the chrome was being
+    // cached as a successful capture and locking in a 78-char "body."
+    const chrome = `Pre Market Prep Note 5-7-2026
+Sign in
+
+Last sync: Now
+
+Reload page
+Open in app`;
+    expect(looksLikePlaceholder(chrome)).toBe(true);
+  });
+
+  it('flags an "Open in app" chrome variant', () => {
+    const stub = 'Pre Market Prep\nOpen in app\nSign in';
+    expect(looksLikePlaceholder(stub)).toBe(true);
+  });
 });
 
 describe('EvernoteService cache', () => {
