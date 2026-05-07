@@ -838,7 +838,7 @@ export class ExecutionService {
 
       let size = tradeFilterService.calculatePositionSize(candidate, account);
       if (size.shares <= 0) {
-        this.recordRejection(candidate, 'position size rounded to 0 shares');
+        this.recordRejection(candidate, size.zeroReason ?? 'position size rounded to 0 shares');
         continue;
       }
 

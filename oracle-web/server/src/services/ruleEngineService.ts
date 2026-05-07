@@ -371,6 +371,20 @@ class RuleEngineService {
       const oneRTarget = suggestedEntry + Math.max(risk, 0);
       suggestedTarget =
         stock.sellZonePrice && stock.sellZonePrice > oneRTarget ? stock.sellZonePrice : oneRTarget;
+    } else if (setup === 'red_candle_theory' && redCandleSignal.matched && redCandleSignal.stop !== null) {
+      // RCT: the trigger candle's high (Alpaca 1m) is the reclaim level
+      // we'd actually buy on. Oracle's `currentPrice` (a different feed)
+      // can be stale relative to the Alpaca minute-bar, especially in
+      // pre-market when one print on the IEX tape can flip the reclaim
+      // check on/off without the scanner refreshing. Using `currentPrice`
+      // verbatim then produced negative-risk geometry (entry < stop) that
+      // dropped through `tradeFilterService.calculatePositionSize` as
+      // "rounded to 0 shares" with no diagnostic context. Fix: take the
+      // larger of the two so the entry never sits below the stop.
+      const candleHigh = redCandleSignal.candleHigh ?? 0;
+      suggestedEntry = Math.max(stock.currentPrice ?? 0, candleHigh);
+      suggestedStop = redCandleSignal.stop;
+      suggestedTarget = stock.sellZonePrice ?? 0;
     } else {
       // Clamp at 99% of max_risk_pct so downstream filters (which reject when
       // riskPct > max_risk_pct) don't trip on floating-point ties at exactly

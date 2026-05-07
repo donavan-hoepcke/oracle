@@ -36,6 +36,11 @@ export interface FilterResult {
 export interface PositionSize {
   shares: number;
   costBasis: number;
+  /** Diagnostic label populated when shares=0 so the rejection log can
+   *  point at the actual constraint (negative-risk geometry, capital cap,
+   *  etc.) rather than the catch-all "rounded to 0 shares." Optional —
+   *  callers that only care about shares can ignore it. */
+  zeroReason?: string;
 }
 
 class TradeFilterService {
@@ -163,8 +168,19 @@ class TradeFilterService {
     const stop = candidate.suggestedStop;
     const riskPerShare = Math.round((entry - stop) * 1e8) / 1e8;
 
-    if (riskPerShare <= 0 || entry <= 0) {
-      return { shares: 0, costBasis: 0 };
+    if (entry <= 0) {
+      return { shares: 0, costBasis: 0, zeroReason: 'invalid entry price (<= 0)' };
+    }
+    if (riskPerShare <= 0) {
+      // Geometrically impossible for a long: stop must be below entry.
+      // Surfacing the actual numbers is what makes a stale-data bug like
+      // 2026-05-07 RXT/SMX/SABR (Oracle currentPrice stale below the Alpaca
+      // 1m red-candle high) obvious from the rejection log.
+      return {
+        shares: 0,
+        costBasis: 0,
+        zeroReason: `invalid entry/stop: entry $${entry.toFixed(3)} <= stop $${stop.toFixed(3)}`,
+      };
     }
 
     const riskSizedShares = Math.floor(exec.risk_per_trade / riskPerShare);
@@ -180,10 +196,23 @@ class TradeFilterService {
 
     const shares = Math.min(riskSizedShares, capitalCapShares, tradeCostCapShares);
     if (shares < 1) {
-      return { shares: 0, costBasis: 0 };
+      // Identify which cap clamped to zero — most often the per-trade
+      // dollar cap (max_trade_cost) for higher-priced symbols.
+      const causes: string[] = [];
+      if (riskSizedShares < 1) causes.push(`risk-per-share $${riskPerShare.toFixed(3)} > $${exec.risk_per_trade}`);
+      if (capitalCapShares < 1) causes.push(`capital cap (deployed ${(capitalPctRatio(account, exec) * 100).toFixed(1)}%)`);
+      if (tradeCostCapShares < 1) causes.push(`max_trade_cost $${exec.max_trade_cost} < entry $${entry.toFixed(3)}`);
+      const reason = causes.length > 0 ? causes.join('; ') : 'all caps yielded < 1 share';
+      return { shares: 0, costBasis: 0, zeroReason: reason };
     }
     return { shares, costBasis: shares * entry };
   }
+}
+
+function capitalPctRatio(account: AccountState, exec: { max_capital_pct: number }): number {
+  const cash = account.isCashAccount ? account.settledCash : account.cash;
+  if (cash <= 0) return 1;
+  return account.deployedCapital / cash;
 }
 
 export const tradeFilterService = new TradeFilterService();
