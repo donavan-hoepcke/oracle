@@ -260,6 +260,76 @@ describe('RuleEngineService suggestedStop clamp', () => {
     expect(candidate!.suggestedStop).toBe(1.85);
   });
 
+  it('RCT suggestedEntry tracks the trigger candle high when Oracle currentPrice is stale below it', () => {
+    // Regression for the 2026-05-07 RXT/SMX/SABR rejections.
+    // detectRedCandleTheory uses Alpaca 1m bars to confirm the reclaim;
+    // pre-market thin liquidity meant a reclaim flipped on briefly while
+    // Oracle's currentPrice (a different feed) was still below the trigger
+    // bar's low. The old path took suggestedEntry = currentPrice verbatim,
+    // producing entry < stop and a downstream "rounded to 0 shares"
+    // rejection with no diagnostic context. The fix uses
+    // max(currentPrice, candleHigh) so geometry stays sane.
+    const stock = makeStock({
+      currentPrice: 1.83, // stale Oracle feed
+      buyZonePrice: null,
+      stopPrice: 1.78,
+      sellZonePrice: 2.6,
+    });
+
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      {
+        matched: true,
+        candleHigh: 2.24, // Alpaca 1m trigger bar high (reclaim level)
+        candleLow: 2.22,
+        entry: 2.24,
+        stop: 2.22,
+        rrToSellZone: 18,
+        details: ['rct matched (stale-feed regression)'],
+      },
+      emptyOrbSignal(),
+    );
+
+    expect(candidate).not.toBeNull();
+    expect(candidate!.setup).toBe('red_candle_theory');
+    expect(candidate!.suggestedEntry).toBe(2.24);
+    expect(candidate!.suggestedStop).toBe(2.22);
+    // Geometry sanity: long-side entry must be > stop. The bug produced
+    // suggestedEntry=1.83 (Oracle) with suggestedStop=2.22 (Alpaca).
+    expect(candidate!.suggestedEntry).toBeGreaterThan(candidate!.suggestedStop);
+  });
+
+  it('RCT suggestedEntry uses currentPrice when it has already cleared the trigger high', () => {
+    // The "happy path" — currentPrice is fresh and above triggerBar.high.
+    // We should pay the (higher) currentPrice on a market buy, not silently
+    // clip to the stale trigger high.
+    const stock = makeStock({
+      currentPrice: 2.30,
+      buyZonePrice: null,
+      stopPrice: 1.78,
+      sellZonePrice: 2.6,
+    });
+
+    const candidate = ruleEngineService.scoreFromInputs(
+      stock,
+      emptyMessageContext(stock.symbol),
+      {
+        matched: true,
+        candleHigh: 2.24,
+        candleLow: 2.22,
+        entry: 2.24,
+        stop: 2.22,
+        rrToSellZone: 18,
+        details: ['rct matched (fresh-feed)'],
+      },
+      emptyOrbSignal(),
+    );
+
+    expect(candidate!.suggestedEntry).toBe(2.30);
+    expect(candidate!.suggestedStop).toBe(2.22);
+  });
+
   it('emptyOrbSignal default keeps legacy two-arg callers working', () => {
     const stock = makeStock({
       currentPrice: 2.0,

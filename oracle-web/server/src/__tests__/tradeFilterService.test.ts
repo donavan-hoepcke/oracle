@@ -179,6 +179,31 @@ describe('TradeFilterService', () => {
       expect(size.shares).toBe(0);
     });
 
+    it('surfaces a diagnostic zeroReason when entry <= stop (negative risk geometry)', () => {
+      // Regression: 2026-05-07 RXT/SMX/SABR were rejected with the
+      // catch-all "rounded to 0 shares" because RCT's suggestedEntry was
+      // sourced from a stale Oracle feed below the Alpaca trigger bar's
+      // low. The geometric impossibility itself should be loudly visible
+      // in the rejection log so the next instance is obvious to triage.
+      const candidate = makeCandidate({ suggestedEntry: 1.83, suggestedStop: 2.22 });
+      const size = tradeFilterService.calculatePositionSize(candidate, makeAccount());
+      expect(size.shares).toBe(0);
+      expect(size.zeroReason).toBeDefined();
+      expect(size.zeroReason).toMatch(/invalid entry\/stop/i);
+      expect(size.zeroReason).toContain('1.830');
+      expect(size.zeroReason).toContain('2.220');
+    });
+
+    it('zeroReason on capital-cap exhaustion names the deployed-capital ratio', () => {
+      // Capital cap binds: account already deployed at the cap, so
+      // maxDeployable rounds to 0 and capitalCapShares < 1.
+      const candidate = makeCandidate({ suggestedEntry: 100.0, suggestedStop: 95.0 });
+      const account = makeAccount({ deployedCapital: 5000 });
+      const size = tradeFilterService.calculatePositionSize(candidate, account);
+      expect(size.shares).toBe(0);
+      expect(size.zeroReason).toMatch(/capital cap/);
+    });
+
     describe('cash account settled-cash sizing (Phase 3)', () => {
       it('sizes against settledCash when isCashAccount=true (risk-bound)', () => {
         // Cash=10000 but only 5000 settled (rest is unsettled proceeds from
