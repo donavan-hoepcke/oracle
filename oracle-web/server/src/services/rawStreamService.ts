@@ -114,11 +114,25 @@ export class RawStreamService {
   private unsubscribeFns: Array<() => void> = [];
   // Dedup keys for moderator alerts. moderatorAlertService re-scrapes the
   // DMP page every poll cycle and emits ALL posts each time; without this
-  // set, every post is republished as a fresh mod_alert event on every
+  // map, every post is republished as a fresh mod_alert event on every
   // cycle, which spams downstream consumers (~25x duplicate evaluations).
-  // Keyed by `${postedAt}|${title}` since posts have no stable id from
-  // the upstream page. Cleared by reset() for tests.
-  private seenModAlertKeys = new Set<string>();
+  //
+  // Keyed by `${postedAt}|${title}` (posts have no stable id from the
+  // upstream page) → first-emit timestamp. Entries older than DEDUP_TTL_MS
+  // are pruned on each onAlerts call so the map can't grow unbounded
+  // across days, and so a post that's still being re-scraped after a
+  // restart can re-emit once per TTL window. The bot-side dedupes on its
+  // own (by postedAt, title), so the at-most-once-per-day re-emit is a
+  // no-op for unchanged posts. Cleared by reset() for tests.
+  private seenModAlertKeys = new Map<string, number>();
+  private static readonly MOD_ALERT_DEDUP_TTL_MS = 24 * 60 * 60 * 1000;
+  // Provider for the moderator-alert snapshot, set by bindModeratorAlertService.
+  // The WS handler calls emitModeratorSnapshotTo() on each new client connect
+  // so a bot connecting mid-afternoon sees today's already-known prep posts
+  // even when the ring buffer has rolled past them. Independent from the
+  // dedup gate — snapshot pushes are subscriber-scoped, not new global
+  // events, so they do NOT enter the buffer or advance nextId.
+  private moderatorSnapshotProvider: (() => unknown[]) | null = null;
 
   constructor(opts: RawStreamServiceOptions = {}) {
     this.bufferSize = opts.bufferSize ?? 1000;
@@ -156,19 +170,68 @@ export class RawStreamService {
     this.unsubscribeFns.push(off);
   }
 
-  bindModeratorAlertService(svc: AlertsHookSource): void {
+  bindModeratorAlertService(
+    svc: AlertsHookSource & { getSnapshot?: () => { posts?: unknown[] } | null | undefined },
+  ): void {
     const off = svc.onAlerts((posts) => {
+      const now = Date.now();
+      // Prune expired keys before checking new ones — TTL is what unblocks
+      // the cross-day case where a post that emitted yesterday is still
+      // being scraped today (rare; happens when the room hasn't rolled the
+      // post off the page) and needs to re-emit so a fresh subscriber's
+      // ring-buffer replay sees it.
+      for (const [key, t] of this.seenModAlertKeys) {
+        if (now - t > RawStreamService.MOD_ALERT_DEDUP_TTL_MS) {
+          this.seenModAlertKeys.delete(key);
+        }
+      }
       for (const post of posts) {
         const p = (post ?? {}) as { postedAt?: unknown; title?: unknown };
         const postedAt = typeof p.postedAt === 'string' ? p.postedAt : '';
         const title = typeof p.title === 'string' ? p.title : '';
         const key = `${postedAt}|${title}`;
         if (this.seenModAlertKeys.has(key)) continue;
-        this.seenModAlertKeys.add(key);
+        this.seenModAlertKeys.set(key, now);
         this.publish({ type: 'mod_alert', payload: shapeModAlertForBot(post) });
       }
     });
     this.unsubscribeFns.push(off);
+    if (typeof svc.getSnapshot === 'function') {
+      this.moderatorSnapshotProvider = () => {
+        const snap = svc.getSnapshot?.();
+        const posts = snap && Array.isArray((snap as { posts?: unknown[] }).posts)
+          ? (snap as { posts: unknown[] }).posts
+          : [];
+        return posts;
+      };
+    }
+  }
+
+  /**
+   * Push the moderator service's current snapshot to a single listener as
+   * `mod_alert` events. Used by the WS handler at connection time so a
+   * fresh client (e.g. the bot starting up mid-afternoon) sees today's
+   * already-known prep / alert posts even when the ring buffer has rolled
+   * past their original ids.
+   *
+   * These events are subscriber-scoped: they do NOT call `publish()`, do
+   * NOT enter the global ring buffer, and do NOT advance `nextId`. Other
+   * connected clients are unaffected. Events use `id: 0` so the client's
+   * Last-Event-ID tracker doesn't advance — the next live event still has
+   * a higher id. The bot's own (postedAt, title) dedup naturally absorbs
+   * any overlap between the snapshot push and a subsequent live emit.
+   */
+  emitModeratorSnapshotTo(listener: RawStreamListener): void {
+    if (!this.moderatorSnapshotProvider) return;
+    const ts = new Date().toISOString();
+    for (const post of this.moderatorSnapshotProvider()) {
+      listener({
+        id: 0,
+        ts,
+        type: 'mod_alert',
+        payload: shapeModAlertForBot(post),
+      });
+    }
   }
 
   bindRegimeService(svc: SnapshotHookSource): void {
@@ -208,6 +271,7 @@ export class RawStreamService {
     this.buffer = [];
     this.nextId = 1;
     this.seenModAlertKeys.clear();
+    this.moderatorSnapshotProvider = null;
     this.emitter.removeAllListeners(EVENT_NAME);
   }
 }
