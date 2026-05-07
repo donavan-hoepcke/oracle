@@ -50,6 +50,15 @@ vi.mock('../services/sectorHotnessService.js', () => ({
   },
 }));
 
+const { mockFetchAlpaca1MinBars } = vi.hoisted(() => ({
+  mockFetchAlpaca1MinBars: vi.fn(),
+}));
+vi.mock('../services/alpacaBarService.js', () => ({
+  fetchAlpaca1MinBars: mockFetchAlpaca1MinBars,
+  fetchAlpacaBars: vi.fn(async () => []),
+  getAlpacaRateLimiterStats: () => ({}),
+}));
+
 import {
   ruleEngineService,
   emptyMessageContext,
@@ -92,6 +101,61 @@ function makeStock(overrides: Partial<StockState>): StockState {
     ...overrides,
   };
 }
+
+describe('RuleEngineService.getRankedCandidates concurrency + cache', () => {
+  beforeEach(() => {
+    ruleEngineService.clearRankingCache();
+    mockFetchAlpaca1MinBars.mockReset();
+    mockFetchAlpaca1MinBars.mockResolvedValue([]); // no bars → no signals; that's fine
+  });
+
+  it('coalesces concurrent callers to one underlying evaluation', async () => {
+    // Regression for 2026-05-07 Issue 1: 12 concurrent /api/raw/symbols/:sym
+    // requests timed out at 15s because each one re-ran the full 40-symbol
+    // evaluation path, queuing ~480 Alpaca bar fetches behind the IEX
+    // rate limiter.
+    const stocks = ['AAA', 'BBB', 'CCC'].map((sym) =>
+      makeStock({ symbol: sym, currentPrice: 1.0, buyZonePrice: 0.95 }),
+    );
+
+    // Fire 12 concurrent callers, each "asking for a different limit" the
+    // way different /api/raw/symbols/:sym handlers would.
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        ruleEngineService.getRankedCandidates(stocks, 10 + i),
+      ),
+    );
+
+    // All callers got SOMETHING (possibly empty list — depends on whether
+    // setups match; what matters is they all completed without timing out).
+    expect(results).toHaveLength(12);
+
+    // The fetch path is shared via inflight + cache: 1 evaluation pass per
+    // distinct symbol, NOT 12 × 3. Each evaluateStock fires fetchAlpaca1MinBars
+    // twice (RCT 90-bar lookback + ORB 390-bar lookback), so the upper
+    // bound is 2 × stocks.length = 6 calls when fully coalesced.
+    expect(mockFetchAlpaca1MinBars.mock.calls.length).toBeLessThanOrEqual(stocks.length * 2);
+  });
+
+  it('serves a second call within 5s from the cache without re-evaluating', async () => {
+    const stocks = [makeStock({ symbol: 'AAA' })];
+    await ruleEngineService.getRankedCandidates(stocks, 10);
+    const fetchesAfterFirst = mockFetchAlpaca1MinBars.mock.calls.length;
+
+    await ruleEngineService.getRankedCandidates(stocks, 10);
+    expect(mockFetchAlpaca1MinBars.mock.calls.length).toBe(fetchesAfterFirst);
+  });
+
+  it('different `limit` values share the same underlying ranking', async () => {
+    const stocks = ['AAA', 'BBB'].map((sym) => makeStock({ symbol: sym }));
+    await ruleEngineService.getRankedCandidates(stocks, 1);
+    const baseline = mockFetchAlpaca1MinBars.mock.calls.length;
+    // limit=50 should NOT re-trigger the fetches — it just slices a
+    // longer range from the cached full-list.
+    await ruleEngineService.getRankedCandidates(stocks, 50);
+    expect(mockFetchAlpaca1MinBars.mock.calls.length).toBe(baseline);
+  });
+});
 
 describe('RuleEngineService suggestedStop clamp', () => {
   it('clamps a wide Oracle stop to the max-risk cap for non-RCT setups', () => {
